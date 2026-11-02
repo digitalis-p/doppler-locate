@@ -60,5 +60,8 @@ cache="$share/icons/hicolor/icon-theme.cache"
 if [ -f "$cache" ] && command -v gtk-update-icon-cache >/dev/null; then
   gtk-update-icon-cache -q -f -t "$share/icons/hicolor"
 fi
+# Running icon themes (GNOME Shell's included) rescan only when the theme's top directory
+# changes, not when a file lands in scalable/apps: bump its mtime so the new icon is picked up.
+touch "$share/icons/hicolor"
 echo "installed: $desktop"
 echo "installed: $icon"

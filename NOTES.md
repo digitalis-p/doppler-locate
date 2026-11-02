@@ -55,6 +55,10 @@ straight-line fits; the video measured 920-921 s).
 - GUI tests run headless: `gtk4-broadwayd --address 127.0.0.1 :7` and `GDK_BACKEND=broadway
   BROADWAY_DISPLAY=:7`; render widgets to PNG with Gtk.WidgetPaintable + Gsk.CairoRenderer
   (take the shot one frame after a page change, or the snapshot node is empty).
+- New icons in ~/.local/share/icons/hicolor/scalable/apps are invisible to a running GNOME Shell
+  until the theme's top directory changes (it compares only that mtime): `touch
+  ~/.local/share/icons/hicolor` (install-desktop.sh does). There is no user icon cache here (only a
+  stale `.icon-theme.cache` temp file); do not create one, other apps install icons without updating it.
 - CONUS elevation lattice (200 m, int16, 1.0 GB): `data/cache/elev/conus_albers_200m.npy`, built
   once in ~7 min from GLO-90.
 - Caches: `data/cache/dem/glo90` (~4.5 GB, CONUS), `data/cache/gfs` (~32 MB/day), `data/cache/wind`.
