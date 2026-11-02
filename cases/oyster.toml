@@ -10,7 +10,7 @@ out = "out/oyster"
 c = 343.0
 
 [search]
-offset_tol_s = 5.0
+offset_tol_s = 8.0   # straight-line midpoints carry a few s of wind / manoeuvre bias (w*d/v^2)
 
 [score]
 # event-1 clock sweep: absorbs the bias of the straight-line midpoint estimate (manoeuvres, wind);

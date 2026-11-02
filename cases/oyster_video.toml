@@ -13,6 +13,9 @@ c = 343.0
 [search]
 offset_tol_s = 5.0
 
+[score]
+dt_sweep = [-8.0, 8.0, 0.1]
+
 [silence]
 enabled = true
 mode = "cpa"

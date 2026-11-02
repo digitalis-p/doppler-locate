@@ -59,7 +59,7 @@ class Score:
     win_s: float = 1.0
     hop_s: float = 0.25
     dt_sweep: tuple[float, float, float] = (-3.0, 3.0, 0.1)
-    f0_sweep_frac: float = 0.06      # straight-line f0 estimates are only good to a few %
+    f0_sweep_frac: float = 0.08      # straight-line f0 can be off ~6% (descent, deceleration)
     f0_step_hz: float = 0.05
     refine_m: float = 100.0
     model_dt: float = 0.1
