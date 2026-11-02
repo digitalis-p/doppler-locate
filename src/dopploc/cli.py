@@ -138,6 +138,25 @@ def cmd_heatmap(a):
     print(f"heatmap peak {top['lat']:.6f},{top['lon']:.6f} score {top['score']:.3f} -> {out}")
 
 
+def cmd_detect(a):
+    from . import detect
+    p = detect.Params(threshold=a.threshold, fmin=a.fmin, fmax=a.fmax, refine=not a.no_refine)
+    src = a.source
+    meta = {}
+    if detect.URL.match(src):
+        path, meta = detect.fetch(src, a.downloads, a.start, a.duration)
+        start, dur = 0.0, None  # the download is already the requested section
+        stem = path.parent.name
+    else:
+        path = _p(src)
+        start, dur = a.start or 0.0, a.duration
+        stem = path.stem
+    out = a.out or Path("out/detect") / stem
+    res = detect.detect(path, start, dur, p, meta=meta)
+    print(detect.report(res))
+    detect.save(res, out)
+
+
 def cmd_synth(a):
     from . import config, synth
     case = config.load(a.case)
@@ -228,6 +247,18 @@ def main(argv=None):
     p.add_argument("--half", type=float, default=1500)
     p.add_argument("--step", type=float, default=25)
     p.set_defaults(fn=cmd_heatmap)
+
+    p = sub.add_parser("detect", help="find aircraft Doppler curves in an audio/video file or web video link")
+    p.add_argument("source", help="file path, or a URL that yt-dlp understands (YouTube, ...)")
+    p.add_argument("--start", type=float, help="analyse from this many seconds into the source")
+    p.add_argument("--duration", type=float, help="seconds to analyse (default: to the end)")
+    p.add_argument("--fmin", type=float, default=30.0)
+    p.add_argument("--fmax", type=float, default=1000.0)
+    p.add_argument("--threshold", type=float, default=8.0, help="matched-filter score threshold")
+    p.add_argument("--no-refine", action="store_true", help="skip the trace + flyby fit of each detection")
+    p.add_argument("--out", type=_p, help="output dir (default out/detect/<name>)")
+    p.add_argument("--downloads", type=_p, default=Path("data/downloads"), help="where web audio is saved")
+    p.set_defaults(fn=cmd_detect)
 
     p = sub.add_parser("synth", help="synthetic recording from real tracks (validation)")
     p.add_argument("case", type=_p)

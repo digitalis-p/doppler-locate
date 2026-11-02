@@ -45,6 +45,24 @@ straight-line fits; the video measured 920-921 s).
 - Never edit a bash script while a job is executing it: bash reads scripts incrementally, and
   editing `run-capped.sh` mid-run broke the tail of a running job (exit status was kept).
 
+## Flyover detector (dopploc detect)
+- Road vehicles make the same Doppler curves (v 10-30 m/s, d < 100 m): classify by fitted d/v.
+- The matched-filter score alone is a poor confidence measure on real audio: 39 "medium+" hits,
+  only 4 matching ADS-B. The flyby-fit residual relative to frequency separates them (real
+  <= 0.5 %, junk >= 1.2 %); cut at 1 %. Unrefined (fit failed or at bounds) = low.
+- Time-only matching against ADS-B is meaningless (68 detections x 49 passes in 1 h give ~28
+  chance matches): eval_detect.py requires consistent speed/distance and reports chance level.
+- The per-detection fit (profile_ranges) dominated the run time (95 s / 10 min of audio);
+  fits now run in a spawned process pool, ranges only for kept detections: 60 min in ~70 s.
+- Use spawn, not fork, for pools once numba / FFT threads have run.
+- One aircraft shows several components (PC-12: 113 Hz blade pass and 141 Hz, a 5:4 shaft
+  harmonic); their fits disagree by ~20 s in CPA time: merge by small-integer ratio within
+  max(25 s, tau/2).
+- HWNDU (Mar 2017): only short clips survive (YouTube HxRLsWKYA6Q, W6uGP8hHwrQ, -C9uac3DsBA;
+  archive.org HeWillNotDivideUsTheFalg is 40 s); no Doppler curves in them; adsb.lol starts 2023.
+- The desktop icon theme here is breeze-dark: web-browser-symbolic, sidebar-show-right-symbolic,
+  audio-x-generic-symbolic are missing; check names with Gtk.IconTheme.has_icon.
+
 ## Machine / ops
 - The CONUS search with 24-30 workers peaks near 20 GB (including page cache). On 2026-11-02 a
   search running beside a scoring job exhausted RAM+swap and systemd-oomd killed the whole terminal
@@ -74,3 +92,5 @@ straight-line fits; the video measured 920-921 s).
   f0 +-8 %): rank 1, 52 m, 4.378 vs 3.546.
 - Launcher: `scripts/install-desktop.sh` installed ~/.local/share/applications/io.github.digitalis_p.dopploc.desktop
   and the hicolor icon (2026-11-02); `--uninstall` removes both. GUI state: ~/.local/state/dopploc/gui.json.
+- 2026-11-02 detector, video's recording: 8 flyovers (E1, E2, faint 21:18, 2 jets, 3 non-ADS-B
+  curves); 4/8 match ADS-B (chance 0.6). Synthetic: 2/2 passes within 1 km, 0 false.

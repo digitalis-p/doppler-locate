@@ -48,11 +48,9 @@ def scatter(res: pl.DataFrame, best: pl.DataFrame, path: Path, truth=None):
     plt.close(fig)
 
 
-def overlay(case: Case, row: dict, path: Path, rank: int):
-    """Spectrograms of both events with the candidate's modelled curves at the scored fit."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+def overlay_data(case: Case, row: dict) -> list[dict]:
+    """Per event: the whitened spectrogram around it and the candidate's modelled harmonic
+    curves at the scored fit: [{"spec", "curves": [(t, f)], "title"}]."""
     ev = case.events
     two = "f2" in row and row.get("f2") is not None
     sc = case.score
@@ -62,9 +60,8 @@ def overlay(case: Case, row: dict, path: Path, rank: int):
     fids = [row["f1"]] + ([row["f2"]] if two else [])
     flights = score.load_flights(case, fids, row["t1"] - 900, (row["t2"] if two else row["t1"]) + 900,
                                  log=lambda *_: None)
-    n = 2 if two else 1
-    fig, axes = plt.subplots(1, n, figsize=(9 * n, 6), squeeze=False)
-    for k in range(n):
+    out = []
+    for k in range(2 if two else 1):
         e = ev[k]
         fid = fids[k]
         sm = flights.get(fid)
@@ -72,8 +69,7 @@ def overlay(case: Case, row: dict, path: Path, rank: int):
         fband = e.fband or (max(15.0, 0.6 * e.f0 * min(e.harmonics)), 1.6 * e.f0 * hmax)
         sp = audio.brightness(case.audio, e.audio_cpa - e.half_width_s - 5, e.audio_cpa + e.half_width_s + 5,
                               win_s=sc.win_s, hop_s=sc.hop_s, fmin=fband[0], fmax=fband[1])
-        ax = axes[0, k]
-        ax.pcolormesh(sp.t, sp.f, sp.S, vmin=0, vmax=5, cmap="magma", shading="auto")
+        curves = []
         if sm is not None:
             tdel = row["t1m"] if k == 0 else row["t2m"]
             # audio time of u=0: event 1 at audio_cpa + delta; event 2 locked by geometry
@@ -82,9 +78,27 @@ def overlay(case: Case, row: dict, path: Path, rank: int):
             atm = _row_atm(case, row, k + 1)
             r, _, ok = physics.track_doppler_ratio(tdel + (ta - a0), obs, sm.t0, sm.dt, sm.P, sm.V, atm)
             f0 = row["f01"] if k == 0 else row["f02"]
-            for h in e.harmonics:
-                ax.plot(ta[ok], h * f0 * r[ok], color="cyan", lw=0.8, alpha=0.6)
-        ax.set_title(f"#{rank} event {k + 1} {fid}  S={row['S1' if k == 0 else 'S2']:.2f}")
+            curves = [(ta[ok], h * f0 * r[ok]) for h in e.harmonics]
+        out.append({"spec": sp, "curves": curves,
+                    "title": f"event {k + 1} · {fid} · S={row['S1' if k == 0 else 'S2']:.2f}"})
+    return out
+
+
+def overlay(case: Case, row: dict, path: Path, rank: int):
+    """Spectrograms of both events with the candidate's modelled curves at the scored fit."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    data = overlay_data(case, row)
+    n = len(data)
+    fig, axes = plt.subplots(1, n, figsize=(9 * n, 6), squeeze=False)
+    for k, d in enumerate(data):
+        sp = d["spec"]
+        ax = axes[0, k]
+        ax.pcolormesh(sp.t, sp.f, sp.S, vmin=0, vmax=5, cmap="magma", shading="auto")
+        for t, f in d["curves"]:
+            ax.plot(t, f, color="cyan", lw=0.8, alpha=0.6)
+        ax.set_title(f"#{rank} {d['title']}")
         ax.set_xlabel("audio s")
         ax.set_ylabel("Hz")
     fig.suptitle(f"{row['lat']:.5f}, {row['lon']:.5f}  total {row['score']:.2f}")

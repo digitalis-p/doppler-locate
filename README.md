@@ -44,6 +44,35 @@ implemented but not yet validated on a case where the aircraft is in the data.
 The margin over the runner-up is narrower than in the video (3.66 vs 3.50 here; the video shows
 20.5 vs 15.3 on its own scale, so the numbers are not comparable directly).
 
+## Does a recording contain flyovers? (`dopploc detect`)
+
+```
+dopploc detect REC.webm
+dopploc detect "https://www.youtube.com/watch?v=..." [--start 600 --duration 1800]
+```
+
+No flight data needed. Writes `report.md` (table), `detections.png`, `detections.json` and
+`events.toml` (ready-made `[[event]]` blocks for a case) under `out/detect/<name>/`; links are
+downloaded with yt-dlp into `data/downloads/` (audio only, a section if asked).
+
+How: on a log-frequency axis a straight-line flyby is one fixed curve per (speed, CPA distance /
+speed) pair, with f0 only a shift. 108 such templates are slid over the whitened spectrogram
+(steady hums removed) with FFT cross-correlation, normalised per frequency band. Peaks are
+de-duplicated, grouped into harmonics, traced and fitted with the same flyby fit used to measure
+events. Sources passing within 150 m or slower than 30 m/s (road vehicles, people) are listed
+separately. A detection counts as high/medium confidence only when the fit follows the traced
+ridge to within 1 % of its frequency. A 60-minute recording takes about 70 s on 32 cores.
+
+![Detections in the video's recording](docs/detect_oyster.png)
+
+Known-answer tests:
+
+| Recording | Truth | Result |
+|---|---|---|
+| The video's recording (60 min) | ADS-B passes at the solved camera position and clock (`scripts/eval_detect.py`) | 8 flyovers. Both events the video used: E1 at 35:55 (113.2 Hz, 137 m/s, 6.0 km; ADS-B: PC-12 at 6.2 km, 137 m/s) and E2 at 51:08 (King Air 350, 3.5 km). The video's faint single-event curve at 21:18 (402 Hz, 70 m/s, 0.7 km; that aircraft is not in adsb.lol). Two jets (A350 at 5.5 km, A321neo at 3.2 km). Three more clear flyby curves with no ADS-B aircraft (12:29, 23:29, 2:09). 4 of the 8 match an ADS-B pass in time, speed and distance (0.6 expected by chance). Missed: pistons at 4–10 km, turboprops beyond 7 km and almost all jets (their sound is mostly broadband). 16 close-range sources set aside. |
+| Synthetic recording (13 min, `out/synth`) | rendered passes | Both passes within 1 km found with harmonics 1–4: CPA within 0.6 s, f0 within 1.4 %, speed within 6 %, distance 12–29 % long; the pass at 3.6 km missed; no false high/medium detections. |
+| HWNDU flag stream (2017) | location known (Greeneville, TN) | Only short clips survive (4:39 from 8 Mar, 2:58 from 10 Mar, 3:58 from Aug 2017); none contains an aircraft Doppler curve. A full geolocation test is impossible with free data: adsb.lol history starts in 2023. |
+
 ## Method
 
 1. **Measure** each flyover on a zoomed, whitened spectrogram (prop blade-pass tones sit around
@@ -91,7 +120,8 @@ uv pip install -e '.[test,gui]'
 make -C native            # CUDA + OpenMP library (needs nvcc); `make -C native cpu` for OpenMP only
 ```
 
-The GUI needs the system GTK 4, libadwaita (≥ 1.6) and libshumate typelibs. Without the native
+The GUI needs the system GTK 4, libadwaita (≥ 1.7) and libshumate typelibs; web links need
+`yt-dlp` and `ffmpeg`. Without the native
 library everything falls back to numba.
 
 ## Desktop app
@@ -103,12 +133,13 @@ scripts/install-desktop.sh      # "Doppler Locate" in the app launcher (per user
 
 Started without a case (e.g. from the launcher) it reopens the last case used.
 
-![Audio page: event 1 traced (white) and the fitted flyby curve (cyan)](docs/gui_audio.png)
+![Audio page: detected flyovers in the inspector, numbered on the overview](docs/gui_audio.png)
 ![Results page: ranked pairs, rank 1 next to the camera (green) on the map](docs/gui_results.png)
 
-- **Audio**: whole-recording overview; click to zoom. Trace a ridge automatically (Viterbi) or
-  by clicking, fit a flyby, adjust the model with sliders (f0, speed, CPA distance, CPA time)
-  over the spectrogram, and add the result to the case as an event.
+- **Audio**: open a file or a web video link; whole-recording overview; **Detect flyovers** lists
+  every aircraft Doppler curve (click one to zoom to it with its fitted model). Trace a ridge
+  automatically (Viterbi) or by clicking, fit a flyby, adjust the model with sliders (f0, speed,
+  CPA distance, CPA time) over the spectrogram, and add the result to the case as an event.
 - **Case**: every setting of the case file. The TOML is edited in place (comments kept; a `.bak`
   copy is made the first time a hand-written file is saved).
 - **Run**: fetch and ingest ADS-B, search, score and heat maps as child processes with a live
@@ -147,6 +178,7 @@ filter / scoring settings (see `src/dopploc/config.py` for every option).
 | CONUS search, CPU (numba, 24 processes; `[search] gpu = false`) | ~126 s, peak ~20 GB |
 | CONUS search, GPU (default when the CUDA library is built) | ~80 s, peak 12 GB |
 | Scoring 85 k candidates (CUDA forward model + sweeps) | 40–120 s (numba: ~350 s) |
+| Flyover detection, 60 min of audio | ~70 s |
 
 The first search builds a 200 m CONUS elevation lattice from the DEM (~7 min, 1 GB, cached).
 
@@ -165,5 +197,7 @@ The first search builds a 200 m CONUS elevation lattice from the DEM (~7 min, 1 
 | `score.py`, `native.py` | forward model on real tracks, joint two-event / trace scoring, coarse-to-fine |
 | `report.py` | ranked tables, GeoJSON for QGIS, scatter and curve-overlay plots |
 | `synth.py` | synthetic recordings rendered from real tracks for validation |
+| `detect.py` | flyover detector (matched filter over flyby shapes), yt-dlp input |
+| `expect.py` | flyovers a recording should contain at a known place and clock (ADS-B ground truth) |
 | `gui/` | GTK 4 / libadwaita app |
 | `native/` | CUDA / OpenMP kernels (forward model, scoring sweeps, search) |
