@@ -72,7 +72,22 @@ def trace_ridge(spec: Spectrogram, f_start: float | None = None, f_end: float | 
     off = np.where(den < 0, 0.5 * (y0 - y2) / np.where(den < 0, den, -1), 0.0)
     f = spec.f[0] + (b + np.clip(off, -0.5, 0.5)) * spec.df
     z = B[path, j]
-    keep = z >= min_z
+    # keep the longest run where the (smoothed) ridge is bright; ends usually wander in noise
+    zs = np.convolve(z, np.ones(9) / 9, mode="same")
+    good = zs >= min_z
+    best, cur, start, best_rng = 0, 0, 0, (0, 0)
+    for i, g in enumerate(np.append(good, False)):
+        if g:
+            if cur == 0:
+                start = i
+            cur += 1
+        else:
+            if cur > best:
+                best, best_rng = cur, (start, i)
+            cur = 0
+    keep = np.zeros(len(z), bool)
+    keep[best_rng[0]:best_rng[1]] = True
+    keep &= z >= 0.5 * min_z
     return spec.t[keep], f[keep], z[keep]
 
 
@@ -103,14 +118,23 @@ def fit_flyby(t, f, harmonic: int = 1, c: float = physics.C_SOUND, w=None) -> Fi
         f0, v, d, tc = p
         return w * (physics.linear_flyby(t, f0, v, d, tc, c) - fh)
 
+    w0 = w.copy()
     best = None
-    for d0 in (200, 500, 1000, 2000, 4000, 8000):
-        r = least_squares(resid, [f0_init, v_init, d0, t_init], loss="soft_l1", f_scale=0.5,
-                          bounds=([1, 5, 30, t[0] - 120], [5000, 300, 50000, t[-1] + 120]))
-        if best is None or r.cost < best.cost:
-            best = r
+    for _ in range(4):  # fit, then drop > 4 sigma (MAD) outliers such as hops onto hum lines
+        best = None
+        for d0 in (200, 500, 1000, 2000, 4000, 8000):
+            r = least_squares(resid, [f0_init, v_init, d0, t_init], loss="soft_l1", f_scale=0.5,
+                              bounds=([1, 5, 30, t[0] - 120], [5000, 300, 50000, t[-1] + 120]))
+            if best is None or r.cost < best.cost:
+                best = r
+        res = physics.linear_flyby(t, *best.x[:2], best.x[2], best.x[3], c) - fh
+        mad = np.median(np.abs(res[w > 0])) * 1.4826 + 1e-3
+        new_w = w0 * (np.abs(res) < 4 * mad)
+        if np.array_equal(new_w, w):
+            break
+        w[:] = new_w
     f0, v, d, tc = best.x
-    rms = float(np.sqrt(np.mean(resid(best.x) ** 2)) * harmonic)
+    rms = float(np.sqrt(np.sum(resid(best.x) ** 2) / max(1, np.sum(w > 0))) * harmonic)
     return Fit(float(f0), float(v), float(d), float(tc), rms, harmonic)
 
 

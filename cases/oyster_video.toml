@@ -1,0 +1,37 @@
+# Same recording, but with the measurement ranges shown on screen in the video (10:36):
+#   event 1 "130-154m/s / 4300-7800m away at CPA", event 2 "88-110m/s / 1390-4690m away at CPA",
+#   920 s apart, +-5 s. Event times 1:35:52 and 1:51:13 of the 2-h original; the published
+#   file is its 60-120 min chunk, so subtract 3600 s.
+name = "oyster-video-ranges"
+day = "2026-09-08"
+adsb = "data/adsb/2026-09-08"
+cache = "data/cache"
+audio = "data/recording/recording_4CxVxuMVkMc.webm"
+out = "out/oyster_video"
+c = 343.0
+
+[search]
+offset_tol_s = 5.0
+
+[silence]
+enabled = true
+mode = "cpa"
+ratio = 1.0
+
+[[event]]
+name = "E1"
+audio_cpa = 2152.9
+f0 = 112.75
+harmonics = [1, 2, 3]
+speed_ms = [130, 154]
+slant_m = [4300, 7800]
+half_width_s = 60
+
+[[event]]
+name = "E2"
+audio_cpa = 3072.9
+f0 = 133.5
+harmonics = [1, 2]
+speed_ms = [88, 110]
+slant_m = [1390, 4690]
+half_width_s = 60

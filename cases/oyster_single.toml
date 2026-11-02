@@ -1,0 +1,28 @@
+# Single faint Doppler curve (inaudible; ~1:21:16 into the 2-h original = ~1279 s here) with a
+# known time of day: the video's "say I told you this was 8:37 p.m. UTC". The UTC window below
+# constrains the delayed CPA to 20:35-20:41 UTC to allow for that time being approximate.
+# Scored against the traced line (dopploc trace -> out/oyster/faint.csv), as in the video.
+name = "oyster-single-event"
+day = "2026-09-08"
+adsb = "data/adsb/2026-09-08"
+cache = "data/cache"
+audio = "data/recording/recording_4CxVxuMVkMc.webm"
+out = "out/oyster_single"
+c = 343.0
+
+[search]
+utc_window = ["2026-09-08T20:35:00Z", "2026-09-08T20:41:00Z"]
+
+[score]
+dt_sweep = [-3.0, 3.0, 0.1]
+trace_sigma_hz = 3.0
+
+[[event]]
+name = "S1"
+audio_cpa = 1278.65
+f0 = 400.45
+harmonics = [1]
+speed_ms = [54.8, 100.8]
+slant_m = [401, 1433]
+half_width_s = 35
+trace = "out/oyster/faint.csv"

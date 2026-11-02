@@ -1,0 +1,35 @@
+# Synthetic validation: recording rendered from real 2026-09-08 tracks (dopploc synth, seed 3).
+# Events measured with `dopploc trace` + `dopploc fit`, exactly as for a real recording.
+name = "synth-seed3"
+day = "2026-09-08"
+adsb = "data/adsb/2026-09-08"
+cache = "data/cache"
+audio = "out/synth/synthetic.wav"
+out = "out/synth"
+c = 343.0
+
+[search]
+offset_tol_s = 6.0
+
+[silence]
+enabled = true
+mode = "cpa"
+ratio = 1.0
+
+[[event]]
+name = "E1"
+audio_cpa = 239.33
+f0 = 94.385
+harmonics = [1, 2, 3]
+speed_ms = [66.3, 82.3]
+slant_m = [318, 922]
+half_width_s = 60
+
+[[event]]
+name = "E2"
+audio_cpa = 555.51
+f0 = 98.446
+harmonics = [1, 2, 3]
+speed_ms = [44.4, 80.4]
+slant_m = [461, 2028]
+half_width_s = 60

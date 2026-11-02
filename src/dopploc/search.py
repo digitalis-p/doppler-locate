@@ -236,6 +236,25 @@ def _pair_offsets(c1, t1, c2, t2, offset, tol):
 
 
 @njit(cache=True)
+def _silence_cpa(qcell, w_lo, w_hi, f1, f2, thr, ocell, ot, od, ofi):
+    """Video rule: count other flights' CPA records in the same cell inside [w_lo, w_hi]
+    and nearer than thr. ocell must be sorted."""
+    m = qcell.shape[0]
+    out = np.zeros(m, np.int32)
+    for q in range(m):
+        lo = np.searchsorted(ocell, qcell[q], side="left")
+        hi = np.searchsorted(ocell, qcell[q], side="right")
+        cnt = 0
+        for k in range(lo, hi):
+            if ofi[k] == f1[q] or ofi[k] == f2[q]:
+                continue
+            if w_lo[q] <= ot[k] <= w_hi[q] and od[k] < thr[q]:
+                cnt += 1
+        out[q] = cnt
+    return out
+
+
+@njit(cache=True)
 def _silence_hits(cx, cy, cz, ta, tb, st, sx, sy, sh, sfi, f1, f2, radius, c, excl_s, t1e, t2e):
     """Count audible-aircraft samples per survivor.
 
@@ -330,18 +349,9 @@ def _tile_elev(tx, ty, tile, g, nc, dem: DEM):
     return dem.elevation(lat, lon).reshape(nc, nc), ox, oy
 
 
-def _process_tile(key):
-    G = _G
-    S: Samples = G["S"]
-    case: Case = G["case"]
-    s = case.search
-    tile, g, nc = G["tile"], s.grid_m, G["nc"]
-    tx, ty = _key_xy(key)
-    sidx = G["SI"].gather(tx, ty, S.x, S.y, G["rmax"])
-    if len(sidx) < 3:
-        return None
-    elev, ox, oy = _tile_elev(tx, ty, tile, g, nc, G["dem"])
-    cc, kk, d2b, d2m, d2a = _cpa_tile(sidx, S.fi, S.x, S.y, S.h, elev, ox, oy, g, nc, G["rmax"], G["d2max"])
+def _cpa_records(S, sidx, elev, ox, oy, g, nc, rmax, c):
+    """CPA records with parabolic sub-sample refinement (see ``_cpa_tile``)."""
+    cc, kk, d2b, d2m, d2a = _cpa_tile(sidx, S.fi, S.x, S.y, S.h, elev, ox, oy, g, nc, rmax, rmax * rmax)
     if len(cc) == 0:
         return None
     den = d2b - 2 * d2m + d2a
@@ -351,50 +361,90 @@ def _process_tile(key):
     tau = S.t[kk] + off * S.dt
     nb = np.where(off > 0, kk + 1, kk - 1)
     gs = S.gs[kk] + np.abs(off) * (S.gs[nb] - S.gs[kk])
-    trecv = tau + d / case.c
+    trecv = tau + d / c
     ci, cj = cc // nc, cc % nc
     gx = (round(ox / g) + ci).astype(np.int64)  # global lattice indices
     gy = (round(oy / g) + cj).astype(np.int64)
     cell = (gx + _OFF) * (_K * 4) + (gy + _OFF)
+    return cc, kk, d, tau, gs, trecv, gx, gy, cell
+
+
+def _process_tile(key):
+    G = _G
+    S: Samples = G["S"]
+    case: Case = G["case"]
+    s = case.search
+    tile, g, nc = G["tile"], s.grid_m, G["nc"]
+    tx, ty = _key_xy(key)
     ev = case.events
-    stats = {"cpa_records": len(cc)}
-
-    def match(e):
-        return (gs >= e.speed_ms[0]) & (gs <= e.speed_ms[1]) & (d >= e.slant_m[0]) & (d <= e.slant_m[1])
-
-    m1 = match(ev[0])
-    if s.utc_window is not None:
-        m1 &= (trecv >= s.utc_window[0]) & (trecv <= s.utc_window[1])
-    i1 = np.flatnonzero(m1)
-    stats["e1"] = len(i1)
-    stats["e1_cells"] = len(np.unique(cell[i1]))
-    if len(ev) >= 2:
-        i2 = np.flatnonzero(match(ev[1]))
-        stats["e2"] = len(i2)
-        stats["e2_cells"] = len(np.unique(cell[i2]))
-        if not len(i1) or not len(i2):
+    nev = min(2, len(ev))
+    sidx = [G["SI"][k].gather(tx, ty, S.x, S.y, G["rmax"][k]) for k in range(nev)]
+    if any(len(x) < 3 for x in sidx):
+        return None
+    elev, ox, oy = _tile_elev(tx, ty, tile, g, nc, G["dem"])
+    stats = {}
+    recs = []
+    for k in range(nev):
+        rec = _cpa_records(S, sidx[k], elev, ox, oy, g, nc, G["rmax"][k], case.c)
+        if rec is None:
             return stats, None
-        o = np.lexsort((trecv[i2], cell[i2]))
-        i2 = i2[o]
-        a, b = _pair_offsets(cell[i1], trecv[i1], cell[i2], trecv[i2], case.offset_s, s.offset_tol_s)
-        r1, r2 = i1[a], i2[b]
-        same = (S.fi[kk[r1]] == S.fi[kk[r2]]) & (np.abs(tau[r1] - tau[r2]) < 1.0)
-        r1, r2 = r1[~same], r2[~same]
+        cc, kk, d, tau, gs, trecv, gx, gy, cell = rec
+        e = ev[k]
+        m = (gs >= e.speed_ms[0]) & (gs <= e.speed_ms[1]) & (d >= e.slant_m[0]) & (d <= e.slant_m[1])
+        if k == 0 and s.utc_window is not None:
+            m &= (trecv >= s.utc_window[0]) & (trecv <= s.utc_window[1])
+        i = np.flatnonzero(m)
+        stats[f"cpa_records_e{k + 1}"] = len(cc)
+        stats[f"e{k + 1}"] = len(i)
+        stats[f"e{k + 1}_cells"] = len(np.unique(cell[i]))
+        if not len(i):
+            return stats, None
+        recs.append({"cc": cc[i], "kk": kk[i], "d": d[i], "tau": tau[i], "gs": gs[i], "t": trecv[i],
+                     "gx": gx[i], "gy": gy[i], "cell": cell[i]})
+    R1 = recs[0]
+    if nev == 2:
+        R2 = recs[1]
+        o = np.lexsort((R2["t"], R2["cell"]))
+        R2 = {k: v[o] for k, v in R2.items()}
+        a, b = _pair_offsets(R1["cell"], R1["t"], R2["cell"], R2["t"], case.offset_s, s.offset_tol_s)
+        same = (S.fi[R1["kk"][a]] == S.fi[R2["kk"][b]]) & (np.abs(R1["tau"][a] - R2["tau"][b]) < 1.0)
+        r1, r2 = a[~same], b[~same]
     else:
-        r1, r2 = i1, None
+        r1, r2 = np.arange(len(R1["t"])), None
     stats["offset"] = len(r1)
-    stats["offset_cells"] = len(np.unique(cell[r1]))
+    stats["offset_cells"] = len(np.unique(R1["cell"][r1]))
     if not len(r1):
         return stats, None
+    cell = R1["cell"]
+    ci, cj = R1["cc"] // nc, R1["cc"] % nc
     res = {
-        "gx": gx[r1], "gy": gy[r1],
+        "gx": R1["gx"][r1], "gy": R1["gy"][r1],
         "x": ox + (ci[r1] + 0.5) * g, "y": oy + (cj[r1] + 0.5) * g, "elev": elev[ci[r1], cj[r1]],
-        "f1": S.fi[kk[r1]], "tau1": tau[r1], "t1": trecv[r1], "d1": d[r1], "v1": gs[r1],
+        "f1": S.fi[R1["kk"][r1]], "tau1": R1["tau"][r1], "t1": R1["t"][r1], "d1": R1["d"][r1], "v1": R1["gs"][r1],
     }
     if r2 is not None:
-        res |= {"f2": S.fi[kk[r2]], "tau2": tau[r2], "t2": trecv[r2], "d2": d[r2], "v2": gs[r2]}
+        res |= {"f2": S.fi[R2["kk"][r2]], "tau2": R2["tau"][r2], "t2": R2["t"][r2], "d2": R2["d"][r2],
+                "v2": R2["gs"][r2]}
         sil = case.silence
-        if sil.enabled:
+        if sil.enabled and sil.mode == "cpa":
+            si = G["SA"].gather(tx, ty, S.x, S.y, G["rsil"])
+            orec = _cpa_records(S, si, elev, ox, oy, g, nc, G["rsil"], case.c)
+            qcell = cell[r1]
+            w_lo = np.minimum(res["t1"], res["t2"])
+            w_hi = np.maximum(res["t1"], res["t2"])
+            thr = sil.ratio * np.maximum(res["d1"], res["d2"])
+            if orec is None:
+                hits = np.zeros(len(qcell), np.int32)
+            else:
+                _, okk, od, _, _, ot, _, _, ocell = orec
+                o = np.argsort(ocell, kind="stable")
+                hits = _silence_cpa(qcell, w_lo, w_hi, res["f1"], res["f2"], thr, ocell[o], ot[o], od[o],
+                                    S.fi[okk[o]])
+            res["heard_between"] = hits
+            quiet = hits == 0
+            stats["silent"] = int(quiet.sum())
+            stats["silent_cells"] = len(np.unique(qcell[quiet]))
+        elif sil.enabled:
             ta = res["t1"] + sil.margin_s
             tb = res["t2"] - sil.margin_s
             A = G["A"]
@@ -421,17 +471,19 @@ def run(case: Case, log=print) -> pl.DataFrame:
     s = case.search
     t_start = time.time()
     ev = case.events
-    vmin = min(e.speed_ms[0] for e in ev) - s.speed_margin_ms
     vmax = max(e.speed_ms[1] for e in ev) + s.speed_margin_ms
-    dmax = max(e.slant_m[1] for e in ev)
+    dmax = max(e.slant_m[1] for e in ev[:2])
     log("loading propeller tracks")
     S = build_samples(case, log=log)
-    keep_speed = (S.gs >= vmin) & (S.gs <= vmax)
-    log(f"  {keep_speed.sum():,} samples within {vmin:.0f}-{vmax:.0f} m/s")
+    keep = []
+    for e in ev[:2]:
+        lo, hi = e.speed_ms[0] - s.speed_margin_ms, e.speed_ms[1] + s.speed_margin_ms
+        keep.append((S.gs >= lo) & (S.gs <= hi))
+        log(f"  {e.name}: {keep[-1].sum():,} samples within {lo:.0f}-{hi:.0f} m/s, slant <= {e.slant_m[1]:.0f} m")
 
     A = None
     J = None
-    if len(ev) >= 2 and case.silence.enabled:
+    if len(ev) >= 2 and case.silence.enabled and case.silence.mode != "cpa":
         o = np.argsort(S.t, kind="stable")
         A = {"t": S.t[o], "x": S.x[o], "y": S.y[o], "h": S.h[o], "fi": S.fi[o]}
         if case.silence.jets_below_ft > 0:
@@ -443,14 +495,20 @@ def run(case: Case, log=print) -> pl.DataFrame:
 
     tile = s.tile_km * 1000.0
     nc = int(round(tile / s.grid_m))
-    rmax = dmax + vmax * S.dt
-    if rmax >= tile or case.silence.radius_m >= tile:
-        raise ValueError("tile_km must exceed the search radius")
-    SI = _TileIndex(S.x, S.y, tile, np.flatnonzero(keep_speed))
-    base = SI.tiles()
-    btx = base // _K
-    bty = base % _K
-    work = np.unique(np.concatenate([(btx + dx) * _K + (bty + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]))
+    rmax = [e.slant_m[1] + (e.speed_ms[1] + s.speed_margin_ms) * S.dt for e in ev[:2]]
+    rsil = case.silence.ratio * dmax + vmax * S.dt
+    if max(max(rmax), rsil, case.silence.radius_m) >= tile:
+        raise ValueError("tile_km must exceed the search / silence radius")
+    SI = [_TileIndex(S.x, S.y, tile, np.flatnonzero(k)) for k in keep]
+
+    def dilate(keys):
+        tx, ty = keys // _K, keys % _K
+        return set(np.unique(np.concatenate([(tx + dx) * _K + (ty + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)])).tolist())
+
+    work = dilate(SI[0].tiles())
+    for idx in SI[1:]:
+        work &= dilate(idx.tiles())
+    work = np.array(sorted(work), dtype=np.int64)
     log(f"  {len(work):,} tiles of {s.tile_km:g} km")
 
     dem = DEM(case.cache / "dem", res=90)
@@ -467,7 +525,9 @@ def run(case: Case, log=print) -> pl.DataFrame:
     dem.prefetch(tiles_1deg)
 
     _G.clear()
-    _G.update(S=S, SI=SI, case=case, tile=tile, nc=nc, rmax=rmax, d2max=dmax * dmax, dem=dem)
+    _G.update(S=S, SI=SI, case=case, tile=tile, nc=nc, rmax=rmax, dem=dem, rsil=rsil)
+    if len(ev) >= 2 and case.silence.enabled and case.silence.mode == "cpa":
+        _G["SA"] = _TileIndex(S.x, S.y, tile)
     if A is not None:
         _G["A"], _G["AI"] = A, _TileIndex(A["x"], A["y"], tile)
     if J is not None:

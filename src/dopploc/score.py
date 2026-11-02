@@ -143,30 +143,40 @@ def load_flights(case: Case, fids, t_lo: float, t_hi: float, dt: float = 0.5, lo
     return out
 
 
-def model_ratios(obs_ecef, sm: tracks.Sampled, t_expect, u_grid, c):
+@njit(parallel=True, cache=True)
+def _model_many(obs, t_expect, u_grid, t0, dt, P, V, c, win):
+    n = obs.shape[0]
+    nu = u_grid.shape[0]
+    np_ = P.shape[0]
+    t_cpa = np.full(n, np.nan)
+    d_cpa = np.full(n, np.nan)
+    R = np.full((n, nu), np.nan)
+    for i in prange(n):
+        lo = max(0, int((t_expect[i] - win - t0) / dt))
+        hi = min(np_, int((t_expect[i] + win - t0) / dt) + 1)
+        if hi - lo < 3:
+            continue
+        tau, d, tdel = physics.track_cpa(obs[i], t0 + lo * dt, dt, P[lo:hi], c)
+        t_cpa[i] = tdel
+        d_cpa[i] = d
+        r, _, ok = physics.track_doppler_ratio(tdel + u_grid, obs[i], t0, dt, P, V, c)
+        for j in range(nu):
+            if ok[j]:
+                R[i, j] = r[j]
+    return t_cpa, d_cpa, R
+
+
+def model_ratios(obs_ecef, sm: tracks.Sampled, t_expect, u_grid, c, wind_ecef=None, win: float = 90.0):
     """Delayed CPA and f/f0 on ``u_grid`` (s relative to delayed CPA) for many observers.
 
-    t_expect: approximate delayed CPA per observer (from the search) to pick the right pass.
-    Returns (t_cpa (n,), d_cpa (n,), R (n, len(u_grid))).
+    t_expect: approximate delayed CPA per observer (from the search) picks the right pass
+    (CPA searched within +-win s). Returns (t_cpa (n,), d_cpa (n,), R (n, len(u_grid))).
+    The aircraft velocity used for the Doppler shift is relative to the air mass
+    (ground velocity minus wind) when ``wind_ecef`` is given.
     """
-    n = obs_ecef.shape[0]
-    t_cpa = np.empty(n)
-    d_cpa = np.empty(n)
-    R = np.full((n, len(u_grid)), np.nan)
-    tt = sm.t
-    for i in range(n):
-        # restrict the CPA search to +-90 s around the expected pass
-        lo = np.searchsorted(tt, t_expect[i] - 90.0)
-        hi = np.searchsorted(tt, t_expect[i] + 90.0)
-        if hi - lo < 3:
-            t_cpa[i] = np.nan
-            d_cpa[i] = np.nan
-            continue
-        tau, d, tdel = physics.track_cpa(obs_ecef[i], tt[lo], sm.dt, sm.P[lo:hi], c)
-        t_cpa[i], d_cpa[i] = tdel, d
-        r, _, ok = physics.track_doppler_ratio(tdel + u_grid, obs_ecef[i], sm.t0, sm.dt, sm.P, sm.V, c)
-        R[i] = np.where(ok, r, np.nan)
-    return t_cpa, d_cpa, R
+    V = sm.V if wind_ecef is None else sm.V - wind_ecef
+    return _model_many(np.ascontiguousarray(obs_ecef, dtype=np.float64), np.asarray(t_expect, np.float64),
+                       np.asarray(u_grid, np.float64), sm.t0, sm.dt, sm.P, np.ascontiguousarray(V), c, win)
 
 
 # --------------------------------------------------------------------------- spectrogram prep
@@ -187,10 +197,9 @@ def prepare_event(case: Case, ev: Event, pad: float) -> EventSpec:
     sc = case.score
     hmax = max(ev.harmonics)
     fband = ev.fband or (max(15.0, 0.6 * ev.f0 * min(ev.harmonics)), 1.6 * ev.f0 * hmax)
-    sp = audio.clip_spectrogram(case.audio, ev.audio_cpa, half_width=ev.half_width_s + pad + 2 * sc.win_s,
-                                sr=4000 if fband[1] < 1800 else 16000, win_s=sc.win_s, hop_s=sc.hop_s,
-                                fmin=fband[0], fmax=fband[1])
-    sp = sp.window(ev.audio_cpa - ev.half_width_s, ev.audio_cpa + ev.half_width_s).whiten()
+    sp = audio.brightness(case.audio, ev.audio_cpa - ev.half_width_s, ev.audio_cpa + ev.half_width_s,
+                          sr=4000 if fband[1] < 1800 else 16000, win_s=sc.win_s, hop_s=sc.hop_s,
+                          fmin=fband[0], fmax=fband[1])
     B = sp.S
     if sc.freq_tol_bins > 0:
         B = maximum_filter1d(B, size=2 * sc.freq_tol_bins + 1, axis=0)
@@ -226,7 +235,69 @@ def refine_points(cand: pl.DataFrame, grid_m: float, refine_m: float) -> pl.Data
     return out
 
 
-def score_candidates(case: Case, cand: pl.DataFrame, log=print, refine: bool = True) -> pl.DataFrame:
+def _sweeps(case: Case, fine: bool):
+    sc = case.score
+    d0, d1, dstep = sc.dt_sweep
+    if not fine:
+        dstep = max(dstep, 0.25)
+    deltas = np.arange(d0, d1 + 1e-9, dstep)
+
+    def f0_grid(e: Event):
+        span = e.f0 * sc.f0_sweep_frac
+        step = sc.f0_step_hz if fine else max(sc.f0_step_hz, 0.2)
+        return np.arange(e.f0 - span, e.f0 + span + 1e-9, step)
+    return deltas, f0_grid
+
+
+def _score_block(case, specs, flights, obs, f1, f2, t1s, t2s, deltas, f0_grid, frame_step, u_grid, wind, out, idx_all):
+    """Score rows ``idx_all`` (grouped by flight pair) into the arrays of ``out``."""
+    ev = case.events
+    two = f2 is not None
+    sp = []
+    for s_ in specs:
+        if s_.trace is None and frame_step > 1:
+            sp.append(EventSpec(s_.ev, s_.tau[::frame_step].copy(), np.ascontiguousarray(s_.B[:, ::frame_step]),
+                                s_.fb0, s_.dfb, s_.harms, None))
+        else:
+            sp.append(s_)
+    f0g1 = f0_grid(ev[0])
+    f0g2 = f0_grid(ev[1]) if two else None
+    key = np.char.add(np.char.add(f1[idx_all].astype(str), "|"), f2[idx_all].astype(str)) if two else f1[idx_all]
+    order = np.argsort(key, kind="stable")
+    key_s = key[order]
+    bounds = np.flatnonzero(np.r_[True, key_s[1:] != key_s[:-1], True])
+    for g in range(len(bounds) - 1):
+        idx = idx_all[order[bounds[g]:bounds[g + 1]]]
+        a = f1[idx[0]]
+        if a not in flights or (two and f2[idx[0]] not in flights):
+            continue
+        tc1, dc1, R1 = model_ratios(obs[idx], flights[a], t1s[idx], u_grid, case.c, wind)
+        base1 = np.full(len(idx), ev[0].audio_cpa)
+        S1, A1 = _sweep(case, sp[0], R1, u_grid[0], u_grid[1] - u_grid[0], base1, deltas, f0g1)
+        best = np.argmax(S1, axis=1)
+        r = np.arange(len(idx))
+        out["t1m"][idx], out["d1m"][idx] = tc1, dc1
+        out["S1"][idx] = S1[r, best]
+        out["delta"][idx] = deltas[best]
+        out["f01"][idx] = f0g1[A1[r, best]]
+        if two:
+            tc2, dc2, R2 = model_ratios(obs[idx], flights[f2[idx[0]]], t2s[idx], u_grid, case.c, wind)
+            base2 = ev[0].audio_cpa + (tc2 - tc1)  # locked: geometry sets event 2's position
+            S2, A2 = _sweep(case, sp[1], R2, u_grid[0], u_grid[1] - u_grid[0], base2, deltas, f0g2)
+            out["t2m"][idx], out["d2m"][idx] = tc2, dc2
+            out["S2"][idx] = S2[r, best]
+            out["f02"][idx] = f0g2[A2[r, best]]
+            J = S1 + S2
+            bj = np.argmax(J, axis=1)
+            out["S1_joint"][idx] = S1[r, bj]
+            out["S2_joint"][idx] = S2[r, bj]
+            out["delta_joint"][idx] = deltas[bj]
+
+
+def score_candidates(case: Case, cand: pl.DataFrame, log=print, refine: bool = True,
+                     fine_top: int = 5000) -> pl.DataFrame:
+    """Model and score every candidate: a coarse sweep for all rows, then a fine sweep for
+    the best ``fine_top`` rows plus the best row of every flight pair."""
     sc = case.score
     t0 = time.time()
     ev = case.events
@@ -241,60 +312,41 @@ def score_candidates(case: Case, cand: pl.DataFrame, log=print, refine: bool = T
     cand = cand.with_columns(pl.Series("lon", lon), pl.Series("lat", lat), pl.Series("elev", elev))
     log(f"scoring {len(cand):,} points ({cand.select('f1').n_unique()} event-1 flights)")
 
-    d0, d1, dstep = sc.dt_sweep
-    deltas = np.arange(d0, d1 + 1e-9, dstep)
-    pad = max(abs(d0), abs(d1)) + 2.0
-    u_grid = np.arange(-ev[0].half_width_s - pad, ev[0].half_width_s + pad + 1e-9, sc.model_dt)
+    pad = max(abs(sc.dt_sweep[0]), abs(sc.dt_sweep[1])) + 2.0
+    hw = max(e.half_width_s for e in ev)
+    u_grid = np.arange(-hw - pad, hw + pad + 1e-9, sc.model_dt)
     specs = [prepare_event(case, e, pad) for e in ev[: (2 if two else 1)]]
 
-    def f0_grid(e: Event):
-        span = e.f0 * sc.f0_sweep_frac
-        return np.arange(e.f0 - span, e.f0 + span + 1e-9, sc.f0_step_hz)
-
     n = len(cand)
-    t_lo = float(cand["t1"].min()) - 600
-    t_hi = float((cand["t2"] if two else cand["t1"]).max()) + 600
     fids = set(cand["f1"].to_list()) | (set(cand["f2"].to_list()) if two else set())
     log(f"  reconstructing {len(fids)} flights")
-    flights = load_flights(case, fids, t_lo, t_hi, log=log)
-
-    out = {k: np.full(n, np.nan) for k in ("t1m", "d1m", "S1", "delta", "f01", "t2m", "d2m", "S2", "f02",
-                                           "S2_joint", "S1_joint", "delta_joint")}
-    f1 = cand["f1"].to_numpy()
-    f2 = cand["f2"].to_numpy() if two else None
+    flights = load_flights(case, fids, -np.inf, np.inf, log=log)
+    wind = None
+    if case.wind_ms:
+        wind = geo.enu_to_ecef_vec(float(np.mean(lat)), float(np.mean(lon)), case.wind_ms[0], case.wind_ms[1], 0.0)
+    f1 = cand["f1"].to_numpy().astype(str)
+    f2 = cand["f2"].to_numpy().astype(str) if two else None
     t1s = cand["t1"].to_numpy()
     t2s = cand["t2"].to_numpy() if two else None
-    f0g1 = f0_grid(ev[0])
-    f0g2 = f0_grid(ev[1]) if two else None
-    key = np.array([f"{a}|{b}" for a, b in zip(f1, f2)]) if two else f1
-    for k in np.unique(key):
-        idx = np.flatnonzero(key == k)
-        a = f1[idx[0]]
-        if a not in flights or (two and f2[idx[0]] not in flights):
-            continue
-        tc1, dc1, R1 = model_ratios(obs[idx], flights[a], t1s[idx], u_grid, case.c)
-        base1 = np.full(len(idx), ev[0].audio_cpa)
-        S1, A1 = _sweep(case, specs[0], R1, u_grid[0], sc.model_dt, base1, deltas, f0g1)
-        best = np.argmax(S1, axis=1)
-        r = np.arange(len(idx))
-        out["t1m"][idx], out["d1m"][idx] = tc1, dc1
-        out["S1"][idx] = S1[r, best]
-        out["delta"][idx] = deltas[best]
-        out["f01"][idx] = f0g1[A1[r, best]]
-        if two:
-            b = f2[idx[0]]
-            tc2, dc2, R2 = model_ratios(obs[idx], flights[b], t2s[idx], u_grid, case.c)
-            base2 = ev[0].audio_cpa + (tc2 - tc1)  # locked: geometry sets event 2's position
-            S2, A2 = _sweep(case, specs[1], R2, u_grid[0], sc.model_dt, base2, deltas, f0g2)
-            out["t2m"][idx], out["d2m"][idx] = tc2, dc2
-            out["S2"][idx] = S2[r, best]
-            out["f02"][idx] = f0g2[A2[r, best]]
-            J = S1 + S2
-            bj = np.argmax(J, axis=1)
-            out["S1_joint"][idx] = S1[r, bj]
-            out["S2_joint"][idx] = S2[r, bj]
-            out["delta_joint"][idx] = deltas[bj]
-    res = cand.with_columns(*[pl.Series(k, v) for k, v in out.items()])
+    cols = ("t1m", "d1m", "S1", "delta", "f01", "t2m", "d2m", "S2", "f02", "S2_joint", "S1_joint", "delta_joint")
+    coarse = {k: np.full(n, np.nan) for k in cols}
+    deltas, f0_grid = _sweeps(case, fine=False)
+    log(f"  coarse sweep: {len(deltas)} shifts x {len(f0_grid(ev[0]))} f0 steps")
+    _score_block(case, specs, flights, obs, f1, f2, t1s, t2s, deltas, f0_grid, 2, u_grid, wind, coarse, np.arange(n))
+    tot = coarse["S1"] + (coarse["S2"] if two else 0)
+    tot = np.where(np.isfinite(tot), tot, -np.inf)
+    sel = set(np.argsort(-tot)[:fine_top].tolist())
+    keyc = np.char.add(np.char.add(f1, "|"), f2) if two else f1
+    for k in np.unique(keyc):  # best coarse row of every flight pair
+        ii = np.flatnonzero(keyc == k)
+        sel.add(int(ii[np.argmax(tot[ii])]))
+    sel = np.array(sorted(sel))
+    fine = {k: v.copy() for k, v in coarse.items()}
+    deltas, f0_grid = _sweeps(case, fine=True)
+    log(f"  fine sweep on {len(sel):,} rows: {len(deltas)} shifts x {len(f0_grid(ev[0]))} f0 steps")
+    _score_block(case, specs, flights, obs, f1, f2, t1s, t2s, deltas, f0_grid, 1, u_grid, wind, fine, sel)
+    res = cand.with_columns(*[pl.Series(k, v) for k, v in fine.items()],
+                            pl.Series("score_coarse", tot), pl.Series("refined", np.isin(np.arange(n), sel)))
     if two:
         if sc.mode == "joint":
             res = res.with_columns((pl.col("S1_joint") + pl.col("S2_joint")).alias("score"))
@@ -303,13 +355,16 @@ def score_candidates(case: Case, cand: pl.DataFrame, log=print, refine: bool = T
         res = res.with_columns((pl.col("t2m") - pl.col("t1m") - case.offset_s).alias("offset_err_model"))
     else:
         res = res.with_columns(pl.col("S1").alias("score"))
-    res = res.sort("score", descending=True, nulls_last=True)
+    # unrefined rows keep coarse scores, which are not comparable; rank refined rows first
+    res = res.sort(["refined", "score"], descending=[True, True], nulls_last=True)
     log(f"  scored in {time.time() - t0:.0f} s")
     return res
 
 
 def best_per_pair(res: pl.DataFrame) -> pl.DataFrame:
     keys = ["f1", "f2"] if "f2" in res.columns else ["f1"]
+    if "refined" in res.columns:
+        res = res.filter(pl.col("refined"))
     return (res.filter(pl.col("score").is_finite()).sort("score", descending=True)
             .group_by(keys, maintain_order=True).first().sort("score", descending=True))
 
@@ -321,5 +376,5 @@ def heatmap(case: Case, row: dict, half_m: float = 1500.0, step_m: float = 25.0,
     base = {k: v for k, v in row.items() if k in ("f1", "f2", "t1", "t2")}
     df = pl.DataFrame({"x": X.ravel(), "y": Y.ravel()}).with_columns(
         *[pl.lit(v).alias(k) for k, v in base.items()])
-    res = score_candidates(case, df, log=log, refine=False)
+    res = score_candidates(case, df, log=log, refine=False, fine_top=len(df))
     return res

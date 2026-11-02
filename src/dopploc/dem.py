@@ -7,6 +7,7 @@ the bucket; those read as 0 m.
 from __future__ import annotations
 
 import threading
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -47,11 +48,18 @@ class DEM:
             return None
         base, _ = _SRC[self.res]
         name = tile_name(la, lo, self.res)
-        r = requests.get(f"{base}/{name}/{name}.tif", timeout=300)
-        if r.status_code in (403, 404):
-            missing.touch()
-            return None
-        r.raise_for_status()
+        for attempt in range(6):
+            try:
+                r = requests.get(f"{base}/{name}/{name}.tif", timeout=300)
+                if r.status_code in (403, 404):
+                    missing.touch()
+                    return None
+                r.raise_for_status()
+                break
+            except requests.RequestException:
+                if attempt == 5:
+                    raise
+                time.sleep(2 ** attempt)
         tmp = tif.with_suffix(".part")
         tmp.write_bytes(r.content)
         tmp.rename(tif)
@@ -93,6 +101,9 @@ class DEM:
         la = np.floor(lat).astype(int)
         lo = np.floor(lon).astype(int)
         key = la * 1000 + lo
+        need = {(int(a), int(b)) for a, b in np.unique(np.stack([la.ravel(), lo.ravel()], 1), axis=0)}
+        if len(need) > 1:
+            self.prefetch(need)
         for k in np.unique(key):
             sel = key == k
             t = self._tile(int(la[sel][0]), int(lo[sel][0]))

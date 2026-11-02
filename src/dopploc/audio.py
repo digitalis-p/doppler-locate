@@ -45,11 +45,21 @@ class Spectrogram:
         sel = (self.t >= tmin) & (self.t <= tmax)
         return Spectrogram(self.f, self.t[sel], self.S[:, sel], self.df, self.dt)
 
-    def whiten(self, clip: tuple[float, float] = (0.0, 6.0)) -> "Spectrogram":
-        """Per-bin robust z-score (median / MAD over time), clipped. Brightness for scoring."""
-        med = np.median(self.S, axis=1, keepdims=True)
-        mad = np.median(np.abs(self.S - med), axis=1, keepdims=True) * 1.4826 + 1e-6
-        Z = np.clip((self.S - med) / mad, clip[0], clip[1])
+    def whiten(self, clip: tuple[float, float] = (0.0, 6.0), freq_hz: float = 15.0) -> "Spectrogram":
+        """Robust z-score brightness for tracing and scoring, clipped to ``clip``.
+
+        1. per bin, subtract the median over time (removes stationary hum lines; use a
+           context several times longer than one flyover so a pass's own plateau does not
+           set the median), 2. per frame, subtract the median over +-``freq_hz`` (removes
+           broadband events such as cars and wind), 3. divide by a global robust spread.
+        """
+        S = self.S - np.median(self.S, axis=1, keepdims=True)
+        if freq_hz > 0:
+            from scipy.ndimage import median_filter
+            k = max(3, int(round(2 * freq_hz / self.df)) | 1)
+            S = S - median_filter(S, size=(k, 1), mode="nearest")
+        mad = np.median(np.abs(S)) * 1.4826 + 1e-6
+        Z = np.clip(S / mad, clip[0], clip[1])
         return Spectrogram(self.f, self.t, Z.astype(np.float32), self.df, self.dt)
 
     def sample(self, t: np.ndarray, f: np.ndarray) -> np.ndarray:
@@ -113,3 +123,11 @@ def render(spec: Spectrogram, out: str | Path, title: str = "", overlays=(), vmi
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
+
+
+def brightness(path, t0: float, t1: float, context: float = 240.0, sr: int = 4000, **kw) -> Spectrogram:
+    """Whitened spectrogram of [t0, t1], whitened using +-``context`` s around it."""
+    a = max(0.0, t0 - context)
+    x = load_audio(path, sr=sr, start=a, duration=(t1 + context) - a)
+    sp = spectrogram(x, sr, t_offset=a, **kw).whiten()
+    return sp.window(t0, t1)

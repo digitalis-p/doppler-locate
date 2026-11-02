@@ -47,8 +47,7 @@ def cmd_spec(a):
 
 def cmd_trace(a):
     from . import audio, measure
-    x = audio.load_audio(a.audio, sr=a.sr, start=a.t0, duration=a.t1 - a.t0)
-    sp = audio.spectrogram(x, a.sr, win_s=a.win, hop_s=a.hop, fmin=a.fmin, fmax=a.fmax, t_offset=a.t0).whiten()
+    sp = audio.brightness(a.audio, a.t0, a.t1, sr=a.sr, win_s=a.win, hop_s=a.hop, fmin=a.fmin, fmax=a.fmax)
     t, f, z = measure.trace_ridge(sp, a.f_start, a.f_end, max_slope_hz_s=a.max_slope, min_z=a.min_z)
     np.savetxt(a.out, np.c_[t, f, np.full(len(t), a.harmonic), z], delimiter=",", fmt="%.4f",
                header="t,f,harmonic,z")
@@ -70,6 +69,10 @@ def cmd_fit(a):
         sel &= t <= a.t1
     t, f = t[sel], f[sel]
     fit = measure.fit_flyby(t, f, h, c=a.c)
+    res = fit.curve(t, a.c) - f
+    inl = np.abs(res) < max(4 * 1.4826 * np.median(np.abs(res)), 0.5)
+    print(f"{inl.sum()}/{len(t)} trace points within the inlier band")
+    t, f = t[inl], f[inl]
     print(f"fit: f0={fit.f0:.3f} Hz  v={fit.v:.1f} m/s ({fit.v / 0.514444:.0f} kt)  d={fit.d:.0f} m  "
           f"t_cpa={fit.t_cpa:.2f} s  rms={fit.rms:.2f} Hz")
     rng = measure.profile_ranges(t, f, fit, c=a.c, rel=a.rel, abs_hz=a.abs_hz)

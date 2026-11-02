@@ -37,10 +37,12 @@ def render_pass(sm: tracks.Sampled, obs, t_start, duration, sr, f0, amps, c, ref
     # slow engine-speed wander (+-0.15 %)
     wander = np.cumsum(rng.normal(0, 1, len(tq)))
     wander = 0.0015 * wander / (np.abs(wander).max() + 1e-9)
-    phase_scale = 1 + np.interp(ta, tq - t_start, wander)
+    w_a = np.interp(ta, tq - t_start, wander)
+    # source phase time: integral of (1 + wander) over emission time
+    src_t = tau_a + np.concatenate([[0.0], np.cumsum(w_a[1:] * np.diff(tau_a))])
     x = np.zeros_like(ta)
     for h, a in amps.items():
-        x += a * np.sin(2 * np.pi * h * f0 * tau_a * phase_scale + rng.uniform(0, 2 * np.pi))
+        x += a * np.sin(2 * np.pi * h * f0 * src_t + rng.uniform(0, 2 * np.pi))
     return (x * env_a).astype(np.float32)
 
 

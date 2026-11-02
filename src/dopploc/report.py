@@ -70,8 +70,8 @@ def overlay(case: Case, row: dict, path: Path, rank: int):
         sm = flights.get(fid)
         hmax = max(e.harmonics)
         fband = e.fband or (max(15.0, 0.6 * e.f0 * min(e.harmonics)), 1.6 * e.f0 * hmax)
-        sp = audio.clip_spectrogram(case.audio, e.audio_cpa, half_width=e.half_width_s + 5, win_s=sc.win_s,
-                                    hop_s=sc.hop_s, fmin=fband[0], fmax=fband[1]).whiten()
+        sp = audio.brightness(case.audio, e.audio_cpa - e.half_width_s - 5, e.audio_cpa + e.half_width_s + 5,
+                              win_s=sc.win_s, hop_s=sc.hop_s, fmin=fband[0], fmax=fband[1])
         ax = axes[0, k]
         ax.pcolormesh(sp.t, sp.f, sp.S, vmin=0, vmax=5, cmap="magma", shading="auto")
         if sm is not None:

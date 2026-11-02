@@ -1,0 +1,7 @@
+# Base case used to generate a synthetic recording from real Sept 8 2026 tracks.
+name = "synth-base"
+day = "2026-09-08"
+adsb = "data/adsb/2026-09-08"
+cache = "data/cache"
+audio = "out/synth/synthetic.wav"
+out = "out/synth"

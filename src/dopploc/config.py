@@ -23,10 +23,20 @@ class Event:
 
 @dataclass
 class Silence:
+    """Disqualify candidates that would have heard other aircraft between the two events.
+
+    mode "cpa" (the video's rule): another non-jet flight whose delayed CPA falls between the
+    two events' delayed CPAs, closer than ``ratio`` * max(d1, d2) (the farther event was
+    still audible, so anything nearer would have been too). Jets are ignored.
+    mode "samples": any non-jet track sample within ``radius_m`` whose sound arrives in
+    (t1 + margin_s, t2 - margin_s); optionally low jets within ``jet_radius_m``.
+    """
     enabled: bool = True
-    radius_m: float = 3000.0         # any audible aircraft closer than this ...
-    margin_s: float = 60.0           # ... with sound arriving in (t1 + margin, t2 - margin) disqualifies
-    jets_below_ft: float = 0.0       # also count jets below this baro altitude (0 = ignore jets)
+    mode: str = "cpa"
+    ratio: float = 1.0
+    radius_m: float = 3000.0
+    margin_s: float = 60.0
+    jets_below_ft: float = 0.0
     jet_radius_m: float = 2000.0
 
 
@@ -52,11 +62,11 @@ class Score:
     f0_sweep_frac: float = 0.015
     f0_step_hz: float = 0.05
     refine_m: float = 100.0
-    model_dt: float = 0.05
+    model_dt: float = 0.1
     freq_tol_bins: int = 1
     mode: str = "locked"             # "locked" (event-1 sets the clock) or "joint"
     trace_sigma_hz: float = 1.5
-    dem_res: int = 30
+    dem_res: int = 90               # 30 for local heat maps; 90 keeps CONUS-wide scoring cheap
 
 
 @dataclass
@@ -70,6 +80,7 @@ class Case:
     day: str
     c: float = 343.0
     altitude: str = "auto"
+    wind_ms: tuple[float, float] | None = None   # (east, north) wind the air mass moves toward
     events: list[Event] = field(default_factory=list)
     search: Search = field(default_factory=Search)
     silence: Silence = field(default_factory=Silence)
@@ -126,5 +137,6 @@ def load(path: str | Path) -> Case:
         audio=p("audio", "audio.wav"), adsb=p("adsb", "data/adsb"), cache=p("cache", "data/cache"),
         out=p("out", f"out/{path.stem}"), day=d["day"], c=float(d.get("c", 343.0)),
         altitude=d.get("altitude", "auto"), events=events,
+        wind_ms=tuple(d["wind_ms"]) if d.get("wind_ms") else None,
         search=Search(**s), silence=Silence(**d.get("silence", {})), score=Score(**sc),
     )

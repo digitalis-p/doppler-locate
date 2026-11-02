@@ -23,7 +23,7 @@ DEFAULT_EXCLUDE_ENGINES = ("J", "R")  # the video's rule: drop known jets, keep 
 @dataclass
 class Track:
     """One continuous airborne segment of one airframe (raw ADS-B points)."""
-    fid: str               # "<icao>:<segment>"
+    fid: str               # "<icao>:<unix start of segment>"
     icao: str
     type: str | None
     engine: str
@@ -132,7 +132,6 @@ def split_tracks(df: pl.DataFrame, h_msl: np.ndarray, max_gap_s: float = 90.0,
     starts = np.flatnonzero(brk)
     ends = np.append(starts[1:], n)
     out = []
-    seg_no: dict[str, int] = {}
     for a, b in zip(starts, ends):
         ok = np.isfinite(h_msl[a:b]) & np.isfinite(lat[a:b])
         if ok.sum() < min_points:
@@ -143,9 +142,8 @@ def split_tracks(df: pl.DataFrame, h_msl: np.ndarray, max_gap_s: float = 90.0,
         sl = sl[keep]
         if len(sl) < min_points:
             continue
-        k = seg_no.get(icao[a], 0)
-        seg_no[icao[a]] = k + 1
-        out.append(Track(f"{icao[a]}:{k}", icao[a], typ[a], eng[a],
+        # stable id: airframe + segment start time (independent of the loaded window)
+        out.append(Track(f"{icao[a]}:{int(t[sl[0]])}", icao[a], typ[a], eng[a],
                          next((c for c in cs[sl] if c), None),
                          t[sl], lat[sl], lon[sl], h_msl[sl], gs[sl], trk[sl], vr[sl]))
     return out
