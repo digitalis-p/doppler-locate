@@ -1,0 +1,17 @@
+# large / derived data never goes in git
+data/
+cache/
+out/
+*.webm
+*.mp4
+*.wav
+*.flac
+*.parquet
+*.tar
+*.tar.*
+*.tif
+*.npz
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
