@@ -26,7 +26,7 @@ import polars as pl
 from numba import njit, prange
 from scipy.ndimage import maximum_filter1d
 
-from . import audio, geo, physics, search, tracks
+from . import audio, geo, native, physics, search, tracks
 from .config import Case, Event
 from .dem import DEM
 
@@ -213,10 +213,44 @@ def prepare_event(case: Case, ev: Event, pad: float) -> EventSpec:
 
 
 def _sweep(case: Case, spec: EventSpec, R, u0, du, base, deltas, f0s):
+    nat = native.backend() != "numba"
     if spec.trace is not None:
         tt, tf, th = spec.trace
-        return score_trace(R, u0, du, base, deltas, f0s, tt, tf, th, case.score.trace_sigma_hz)
-    return score_brightness(R, u0, du, base, deltas, f0s, spec.harms, spec.tau, spec.B, spec.fb0, spec.dfb)
+        if nat:
+            return native.score_trace(R, u0, du, base, deltas, f0s, tt, tf, th, case.score.trace_sigma_hz)
+        return score_trace(R.astype(np.float64), u0, du, base, deltas, f0s, tt, tf, th, case.score.trace_sigma_hz)
+    if nat:
+        return native.score_brightness(R, u0, du, base, deltas, f0s, spec.harms, spec.tau, spec.B, spec.fb0, spec.dfb)
+    return score_brightness(R.astype(np.float64), u0, du, base, deltas, f0s, spec.harms, spec.tau, spec.B,
+                            spec.fb0, spec.dfb)
+
+
+class Models:
+    """Forward model for arbitrary (flight, observer) rows: native batch or numba per flight."""
+
+    def __init__(self, flights: dict, c: float, wind_ecef=None):
+        self.flights = flights
+        self.c = c
+        self.wind = wind_ecef
+        self.pack = native.TrackPack(flights, wind_ecef) if native.backend() != "numba" and flights else None
+
+    def __call__(self, fids, obs, t_expect, u_grid):
+        n = len(fids)
+        ok = np.array([f in self.flights for f in fids], bool)
+        t_cpa = np.full(n, np.nan)
+        d_cpa = np.full(n, np.nan)
+        R = np.full((n, len(u_grid)), np.nan, np.float32)
+        if not ok.any():
+            return t_cpa, d_cpa, R
+        ii = np.flatnonzero(ok)
+        if self.pack is not None:
+            t_cpa[ii], d_cpa[ii], R[ii] = native.model(self.pack, fids[ii], obs[ii], t_expect[ii], u_grid, self.c)
+            return t_cpa, d_cpa, R
+        for f in np.unique(fids[ii]):
+            jj = ii[fids[ii] == f]
+            a, b, r = model_ratios(obs[jj], self.flights[f], t_expect[jj], u_grid, self.c, self.wind)
+            t_cpa[jj], d_cpa[jj], R[jj] = a, b, r
+        return t_cpa, d_cpa, R
 
 
 # --------------------------------------------------------------------------- driver
@@ -249,8 +283,9 @@ def _sweeps(case: Case, fine: bool):
     return deltas, f0_grid
 
 
-def _score_block(case, specs, flights, obs, f1, f2, t1s, t2s, deltas, f0_grid, frame_step, u_grid, wind, out, idx_all):
-    """Score rows ``idx_all`` (grouped by flight pair) into the arrays of ``out``."""
+def _score_block(case, specs, models: Models, obs, f1, f2, t1s, t2s, deltas, f0_grid, frame_step, u_grid,
+                 out, idx_all, chunk: int = 32768):
+    """Score rows ``idx_all`` into the arrays of ``out`` (locked two-event scoring)."""
     ev = case.events
     two = f2 is not None
     sp = []
@@ -262,30 +297,24 @@ def _score_block(case, specs, flights, obs, f1, f2, t1s, t2s, deltas, f0_grid, f
             sp.append(s_)
     f0g1 = f0_grid(ev[0])
     f0g2 = f0_grid(ev[1]) if two else None
-    key = np.char.add(np.char.add(f1[idx_all].astype(str), "|"), f2[idx_all].astype(str)) if two else f1[idx_all]
-    order = np.argsort(key, kind="stable")
-    key_s = key[order]
-    bounds = np.flatnonzero(np.r_[True, key_s[1:] != key_s[:-1], True])
-    for g in range(len(bounds) - 1):
-        idx = idx_all[order[bounds[g]:bounds[g + 1]]]
-        a = f1[idx[0]]
-        if a not in flights or (two and f2[idx[0]] not in flights):
-            continue
-        tc1, dc1, R1 = model_ratios(obs[idx], flights[a], t1s[idx], u_grid, case.c, wind)
-        base1 = np.full(len(idx), ev[0].audio_cpa)
-        S1, A1 = _sweep(case, sp[0], R1, u_grid[0], u_grid[1] - u_grid[0], base1, deltas, f0g1)
-        best = np.argmax(S1, axis=1)
+    u0, du = u_grid[0], u_grid[1] - u_grid[0]
+    for s0 in range(0, len(idx_all), chunk):
+        idx = idx_all[s0:s0 + chunk]
         r = np.arange(len(idx))
+        tc1, dc1, R1 = models(f1[idx], obs[idx], t1s[idx], u_grid)
+        S1, A1 = _sweep(case, sp[0], R1, u0, du, np.full(len(idx), ev[0].audio_cpa), deltas, f0g1)
+        best = np.argmax(S1, axis=1)
         out["t1m"][idx], out["d1m"][idx] = tc1, dc1
-        out["S1"][idx] = S1[r, best]
+        out["S1"][idx] = np.where(np.isfinite(tc1), S1[r, best], np.nan)
         out["delta"][idx] = deltas[best]
         out["f01"][idx] = f0g1[A1[r, best]]
         if two:
-            tc2, dc2, R2 = model_ratios(obs[idx], flights[f2[idx[0]]], t2s[idx], u_grid, case.c, wind)
+            tc2, dc2, R2 = models(f2[idx], obs[idx], t2s[idx], u_grid)
             base2 = ev[0].audio_cpa + (tc2 - tc1)  # locked: geometry sets event 2's position
-            S2, A2 = _sweep(case, sp[1], R2, u_grid[0], u_grid[1] - u_grid[0], base2, deltas, f0g2)
+            base2 = np.where(np.isfinite(base2), base2, 1e12)
+            S2, A2 = _sweep(case, sp[1], R2, u0, du, base2, deltas, f0g2)
             out["t2m"][idx], out["d2m"][idx] = tc2, dc2
-            out["S2"][idx] = S2[r, best]
+            out["S2"][idx] = np.where(np.isfinite(tc2), S2[r, best], np.nan)
             out["f02"][idx] = f0g2[A2[r, best]]
             J = S1 + S2
             bj = np.argmax(J, axis=1)
@@ -324,6 +353,8 @@ def score_candidates(case: Case, cand: pl.DataFrame, log=print, refine: bool = T
     wind = None
     if case.wind_ms:
         wind = geo.enu_to_ecef_vec(float(np.mean(lat)), float(np.mean(lon)), case.wind_ms[0], case.wind_ms[1], 0.0)
+    models = Models(flights, case.c, wind)
+    log(f"  compute backend: {native.backend()}")
     f1 = cand["f1"].to_numpy().astype(str)
     f2 = cand["f2"].to_numpy().astype(str) if two else None
     t1s = cand["t1"].to_numpy()
@@ -332,7 +363,7 @@ def score_candidates(case: Case, cand: pl.DataFrame, log=print, refine: bool = T
     coarse = {k: np.full(n, np.nan) for k in cols}
     deltas, f0_grid = _sweeps(case, fine=False)
     log(f"  coarse sweep: {len(deltas)} shifts x {len(f0_grid(ev[0]))} f0 steps")
-    _score_block(case, specs, flights, obs, f1, f2, t1s, t2s, deltas, f0_grid, 2, u_grid, wind, coarse, np.arange(n))
+    _score_block(case, specs, models, obs, f1, f2, t1s, t2s, deltas, f0_grid, 2, u_grid, coarse, np.arange(n))
     tot = coarse["S1"] + (coarse["S2"] if two else 0)
     tot = np.where(np.isfinite(tot), tot, -np.inf)
     sel = set(np.argsort(-tot)[:fine_top].tolist())
@@ -344,7 +375,7 @@ def score_candidates(case: Case, cand: pl.DataFrame, log=print, refine: bool = T
     fine = {k: v.copy() for k, v in coarse.items()}
     deltas, f0_grid = _sweeps(case, fine=True)
     log(f"  fine sweep on {len(sel):,} rows: {len(deltas)} shifts x {len(f0_grid(ev[0]))} f0 steps")
-    _score_block(case, specs, flights, obs, f1, f2, t1s, t2s, deltas, f0_grid, 1, u_grid, wind, fine, sel)
+    _score_block(case, specs, models, obs, f1, f2, t1s, t2s, deltas, f0_grid, 1, u_grid, fine, sel)
     res = cand.with_columns(*[pl.Series(k, v) for k, v in fine.items()],
                             pl.Series("score_coarse", tot), pl.Series("refined", np.isin(np.arange(n), sel)))
     if two:
