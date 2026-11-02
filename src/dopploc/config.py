@@ -1,0 +1,130 @@
+"""Case configuration (TOML): audio, ADS-B day, measured events, filter and scoring settings."""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+@dataclass
+class Event:
+    name: str
+    audio_cpa: float                 # audio-clock seconds of the delayed CPA (curve midpoint)
+    f0: float                        # source fundamental (Hz) from the fit
+    speed_ms: tuple[float, float]    # ground-speed range accepted (m/s)
+    slant_m: tuple[float, float]     # CPA slant-distance range accepted (m)
+    harmonics: list[int] = field(default_factory=lambda: [1])
+    half_width_s: float = 60.0       # scoring clip: audio_cpa +- half_width
+    fband: tuple[float, float] | None = None   # scoring band (Hz); default from f0 and harmonics
+    trace: str | None = None         # CSV (t,f[,h]) of a hand/auto traced curve: line scoring
+
+
+@dataclass
+class Silence:
+    enabled: bool = True
+    radius_m: float = 3000.0         # any audible aircraft closer than this ...
+    margin_s: float = 60.0           # ... with sound arriving in (t1 + margin, t2 - margin) disqualifies
+    jets_below_ft: float = 0.0       # also count jets below this baro altitude (0 = ignore jets)
+    jet_radius_m: float = 2000.0
+
+
+@dataclass
+class Search:
+    bbox: tuple[float, float, float, float] = (-126.0, 23.5, -65.5, 50.5)
+    utc_window: tuple[float, float] | None = None  # constrain event-1 delayed CPA (unix s)
+    grid_m: float = 200.0
+    tile_km: float = 20.0
+    sample_dt: float = 3.0
+    offset_tol_s: float = 6.0
+    exclude_engines: tuple[str, ...] = ("J", "R")
+    max_alt_ft: float = 15000.0
+    speed_margin_ms: float = 15.0
+    workers: int = 0
+
+
+@dataclass
+class Score:
+    win_s: float = 1.0
+    hop_s: float = 0.25
+    dt_sweep: tuple[float, float, float] = (-3.0, 3.0, 0.1)
+    f0_sweep_frac: float = 0.015
+    f0_step_hz: float = 0.05
+    refine_m: float = 100.0
+    model_dt: float = 0.05
+    freq_tol_bins: int = 1
+    mode: str = "locked"             # "locked" (event-1 sets the clock) or "joint"
+    trace_sigma_hz: float = 1.5
+    dem_res: int = 30
+
+
+@dataclass
+class Case:
+    name: str
+    root: Path
+    audio: Path
+    adsb: Path
+    cache: Path
+    out: Path
+    day: str
+    c: float = 343.0
+    altitude: str = "auto"
+    events: list[Event] = field(default_factory=list)
+    search: Search = field(default_factory=Search)
+    silence: Silence = field(default_factory=Silence)
+    score: Score = field(default_factory=Score)
+
+    @property
+    def offset_s(self) -> float | None:
+        if len(self.events) < 2:
+            return None
+        return self.events[1].audio_cpa - self.events[0].audio_cpa
+
+
+def _ts(x) -> float:
+    if isinstance(x, (int, float)):
+        return float(x)
+    if isinstance(x, datetime):
+        return x.replace(tzinfo=x.tzinfo or timezone.utc).timestamp()
+    return datetime.fromisoformat(str(x).replace("Z", "+00:00")).timestamp()
+
+
+def load(path: str | Path) -> Case:
+    path = Path(path).resolve()
+    d = tomllib.loads(path.read_text())
+    root = Path(d.get("root", path.parent.parent)).resolve()
+
+    def p(key, default):
+        v = Path(d.get(key, default))
+        return v if v.is_absolute() else root / v
+
+    s = dict(d.get("search", {}))
+    if s.get("utc_window"):
+        s["utc_window"] = tuple(_ts(x) for x in s["utc_window"])
+    else:
+        s.pop("utc_window", None)
+    for k in ("bbox", "exclude_engines"):
+        if k in s:
+            s[k] = tuple(s[k])
+    sc = dict(d.get("score", {}))
+    if "dt_sweep" in sc:
+        sc["dt_sweep"] = tuple(sc["dt_sweep"])
+    events = []
+    for e in d.get("event", []):
+        e = dict(e)
+        e["speed_ms"] = tuple(e["speed_ms"])
+        e["slant_m"] = tuple(e["slant_m"])
+        if e.get("fband"):
+            e["fband"] = tuple(e["fband"])
+        if e.get("trace"):
+            tp = Path(e["trace"])
+            e["trace"] = str(tp if tp.is_absolute() else root / tp)
+        events.append(Event(**e))
+    return Case(
+        name=d.get("name", path.stem), root=root,
+        audio=p("audio", "audio.wav"), adsb=p("adsb", "data/adsb"), cache=p("cache", "data/cache"),
+        out=p("out", f"out/{path.stem}"), day=d["day"], c=float(d.get("c", 343.0)),
+        altitude=d.get("altitude", "auto"), events=events,
+        search=Search(**s), silence=Silence(**d.get("silence", {})), score=Score(**sc),
+    )
