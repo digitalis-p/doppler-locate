@@ -33,7 +33,9 @@ import numpy as np
 
 from . import casefile
 from .plots import ScatterView, SpecView
-from .runner import CAPPED, Job, capped, dopploc_argv
+from .runner import CAPPED, PKG_ROOT, Job, capped, dopploc_argv
+
+APP_ID = "io.github.digitalis_p.dopploc"
 
 CSS = b"""
 .pin { background: #c01c28; color: white; border-radius: 9px; padding: 0 5px; font-size: 8pt; font-weight: bold; }
@@ -48,8 +50,8 @@ def in_thread(fn, done, fail):
     def run():
         try:
             r = fn()
-        except Exception as e:  # shown to the user by fail()
-            GLib.idle_add(lambda: fail(e) and False)
+        except Exception as e:  # shown to the user by fail(); bind e, the except block unbinds it
+            GLib.idle_add(lambda e=e: fail(e) and False)
             return
         GLib.idle_add(lambda: done(r) and False)
     threading.Thread(target=run, daemon=True).start()
@@ -430,6 +432,10 @@ class CasePage(Gtk.Box):
         g = Adw.PreferencesGroup(title="Case", description=str(self.win.case_path or "not saved yet"))
         for key, kind, hint in casefile.TOP:
             g.add(self._entry(doc, key, kind == "str", hint))
+        known = {k for k, _, _ in casefile.TOP} | set(casefile.SECTIONS) | {"event"}
+        for key, v in doc.items():  # other top-level keys in the file (root, legacy "wind", ...)
+            if key not in known and not casefile.is_table(v):
+                g.add(self._entry(doc, key, isinstance(v, str), "other key in the file"))
         self._add(g)
         for sec, cls in casefile.SECTIONS.items():
             g = Adw.PreferencesGroup(title=sec.capitalize(), description="empty = default")
@@ -882,6 +888,7 @@ class Window(Adw.ApplicationWindow):
             app.set_accels_for_action(f"win.{name}", [accel])
         self.connect("close-request", self._close_request)
         self.case.rebuild()
+        case_path = case_path or _last_case()
         if case_path:
             self.open_case(case_path)
         if page:
@@ -958,6 +965,7 @@ class Window(Adw.ApplicationWindow):
             self.error(e)
             return
         self.case_path = path
+        _remember(path)
         self.set_dirty(False)
         self.case.rebuild()
         self.results.reload()
@@ -995,6 +1003,7 @@ class Window(Adw.ApplicationWindow):
             self.error(e)
             return
         self.set_dirty(False)
+        _remember(self.case_path)
         self.toast(f"saved {self.case_path.name}")
         if then:
             then()
@@ -1055,9 +1064,29 @@ class Window(Adw.ApplicationWindow):
         return True
 
 
+STATE = Path(GLib.get_user_state_dir()) / "dopploc" / "gui.json"
+
+
+def _last_case() -> Path | None:
+    """The case opened or saved last (so a start from the app launcher resumes it)."""
+    try:
+        p = Path(json.loads(STATE.read_text())["last_case"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return p if p.is_file() else None
+
+
+def _remember(path: Path):
+    try:
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps({"last_case": str(path)}))
+    except OSError:
+        pass
+
+
 class App(Adw.Application):
     def __init__(self, case: Path | None, page: str | None):
-        super().__init__(application_id="io.github.digitalis_p.dopploc", flags=Gio.ApplicationFlags.NON_UNIQUE)
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.case = case
         self.page = page
         self.win = None
@@ -1066,8 +1095,11 @@ class App(Adw.Application):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
         css.load_from_data(CSS, -1)
-        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
-                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        display = Gdk.Display.get_default()
+        Gtk.StyleContext.add_provider_for_display(display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        # the icon also resolves from a plain checkout, before scripts/install-desktop.sh has run
+        Gtk.IconTheme.get_for_display(display).add_search_path(str(PKG_ROOT / "share" / "icons"))
+        Gtk.Window.set_default_icon_name(APP_ID)
 
     def do_activate(self):
         if self.win is None:

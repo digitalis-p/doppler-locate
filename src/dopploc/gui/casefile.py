@@ -87,6 +87,10 @@ def save(doc: tomlkit.TOMLDocument, path: str | Path):
     path.write_text(text)
 
 
+def is_table(v) -> bool:
+    return isinstance(v, (tomlkit.items.Table, tomlkit.items.AoT, tomlkit.items.InlineTable))
+
+
 def get(doc, section: str | None, key: str):
     tbl = doc if section is None else doc.get(section, {})
     return tbl.get(key)

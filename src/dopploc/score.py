@@ -461,7 +461,9 @@ def heatmap(case: Case, row: dict, half_m: float = 1500.0, step_m: float = 25.0,
     """Score a dense grid around one candidate for its flight pair (finer than the search)."""
     xs = np.arange(-half_m, half_m + 1e-9, step_m)
     X, Y = np.meshgrid(row["x"] + xs, row["y"] + xs, indexing="ij")
-    base = {k: v for k, v in row.items() if k in ("f1", "f2", "t1", "t2")}
+    # the base pass times (t: delayed CPA, tau: emission CPA) stand in for every grid point; the
+    # GFS atmosphere lookup needs tau for the aircraft altitude
+    base = {k: v for k, v in row.items() if k in ("f1", "f2", "t1", "t2", "tau1", "tau2")}
     df = pl.DataFrame({"x": X.ravel(), "y": Y.ravel()}).with_columns(
         *[pl.lit(v).alias(k) for k, v in base.items()])
     res = score_candidates(case, df, log=log, refine=False, fine_top=len(df))

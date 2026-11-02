@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- dopploc: a Doppler curve and its harmonic on a spectrogram, with a location pin -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a1250"/>
+      <stop offset="1" stop-color="#120a26"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4fd18b"/>
+      <stop offset="1" stop-color="#1f9e5a"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="22" fill="url(#bg)"/>
+  <g stroke="#7a2f86" stroke-width="2" opacity="0.55">
+    <line x1="16" y1="100" x2="112" y2="100"/>
+    <line x1="16" y1="58" x2="112" y2="58"/>
+  </g>
+  <path d="M16 30 C 52 30, 64 74, 112 76" fill="none" stroke="#f1605d" stroke-width="4.5"
+        stroke-linecap="round" opacity="0.9"/>
+  <path d="M16 66 C 52 66, 64 88, 112 89" fill="none" stroke="#fcbf55" stroke-width="6"
+        stroke-linecap="round"/>
+  <path d="M84 72 C 77 61, 68 54, 68 43 A 16 16 0 1 1 100 43 C 100 54, 91 61, 84 72 Z"
+        fill="url(#pin)" stroke="#0d3d24" stroke-width="2"/>
+  <circle cx="84" cy="43" r="6" fill="#ffffff"/>
+</svg>

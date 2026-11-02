@@ -64,3 +64,9 @@ straight-line fits; the video measured 920-921 s).
 - 2026-11-02 real, own measurements (`cases/oyster.toml`): rank 1, 67 m, score 3.662 vs 3.504.
 - 2026-11-02 real, video's ranges (`cases/oyster_video.toml`): rank 1, 67 m, 3.683 vs 3.464.
 - 2026-11-02 single-event (`cases/oyster_single.toml`, 20:35-20:41Z): not reproducible, see Lessons.
+- 2026-11-02 GPU search candidates (superset of CPU) scored: rank 1, 67 m, 3.662 vs 3.504 (same top 20).
+- 2026-11-02 heat map around rank 1 (25 m, GLO-90): peak 13 m from the camera.
+- 2026-11-02 synthetic re-run with current defaults (GPU search, joint shift, line suppression,
+  f0 +-8 %): rank 1, 52 m, 4.378 vs 3.546.
+- Launcher: `scripts/install-desktop.sh` installed ~/.local/share/applications/io.github.digitalis_p.dopploc.desktop
+  and the hicolor icon (2026-11-02); `--uninstall` removes both. GUI state: ~/.local/state/dopploc/gui.json.
