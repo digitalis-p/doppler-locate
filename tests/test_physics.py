@@ -20,7 +20,7 @@ def test_linear_flyby_matches_track_model():
     tau, d, tdel = physics.track_cpa(obs, t[0], 0.5, P, c)
     assert abs(tau) < 1e-6 and abs(d - 800.0) < 1e-6 and abs(tdel - 800.0 / c) < 1e-6
     tr = np.linspace(-60, 60, 241)
-    r, _, ok = physics.track_doppler_ratio(tr, obs, t[0], 0.5, P, V, c)
+    r, _, ok = physics.track_doppler_ratio(tr, obs, t[0], 0.5, P, V, physics.still_air(c))
     ra = physics.linear_flyby_ratio(tr, 90.0, 800.0, tdel, c)
     assert ok.all()
     assert np.max(np.abs(r - ra)) < 1e-6

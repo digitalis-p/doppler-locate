@@ -79,7 +79,8 @@ def overlay(case: Case, row: dict, path: Path, rank: int):
             # audio time of u=0: event 1 at audio_cpa + delta; event 2 locked by geometry
             a0 = ev[0].audio_cpa + row["delta"] + (0 if k == 0 else row["t2m"] - row["t1m"])
             ta = sp.t
-            r, _, ok = physics.track_doppler_ratio(tdel + (ta - a0), obs, sm.t0, sm.dt, sm.P, sm.V, case.c)
+            atm = _row_atm(case, row, k + 1)
+            r, _, ok = physics.track_doppler_ratio(tdel + (ta - a0), obs, sm.t0, sm.dt, sm.P, sm.V, atm)
             f0 = row["f01"] if k == 0 else row["f02"]
             for h in e.harmonics:
                 ax.plot(ta[ok], h * f0 * r[ok], color="cyan", lw=0.8, alpha=0.6)
@@ -90,6 +91,19 @@ def overlay(case: Case, row: dict, path: Path, rank: int):
     fig.tight_layout()
     fig.savefig(path, dpi=100)
     plt.close(fig)
+
+
+def _row_atm(case: Case, row: dict, k: int) -> np.ndarray:
+    """Atmosphere vector for one scored row (columns written by score.case_atmosphere)."""
+    lat, lon = row["lat"], row["lon"]
+    if row.get(f"c_e{k}") is not None:  # GFS: wind at aircraft altitude; path wind not stored -> half of it
+        we, wn, ce = row[f"wind_e{k}"], row[f"wind_n{k}"], row[f"c_e{k}"]
+        ws = geo.enu_to_ecef_vec(lat, lon, we, wn, 0.0)
+        return np.r_[ce, ws, ce, 0.5 * ws]
+    if row.get("wind_e") is not None:
+        w = geo.enu_to_ecef_vec(lat, lon, row["wind_e"], row["wind_n"], 0.0)
+        return np.r_[case.c, w, case.c, w]
+    return physics.still_air(case.c)
 
 
 def write(case: Case, res: pl.DataFrame, top: int = 5, log=print, truth: dict | None = None):

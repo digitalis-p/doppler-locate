@@ -38,16 +38,21 @@ HD static inline void interp_track(double tq, double t0, double dt, const double
     *inside = (x >= 0.0 && x <= n - 1);
 }
 
-// f/f0 heard at receive time tr (emission-time radial velocity).
+// f/f0 heard at receive time tr (emission-time radial velocity). a = [c_e, w_s(3), c_p, w_m(3)]
+// or NULL for still air at c.
 HD static inline double ratio_at(double tr, const double *obs, double t0, double dt, const double *P,
-                                 const double *V, int n, double c, int *ok) {
-    double tau = tr - 2000.0 / c, p[3], v[3];
+                                 const double *V, int n, double c, const double *a, int *ok) {
+    double ce = a ? a[0] : c, cp = a ? a[4] : c;
+    double s0 = a ? a[1] : 0.0, s1 = a ? a[2] : 0.0, s2 = a ? a[3] : 0.0;
+    double m0 = a ? a[5] : 0.0, m1 = a ? a[6] : 0.0, m2 = a ? a[7] : 0.0;
+    double tau = tr - 2000.0 / cp, p[3], v[3];
     int inside;
     for (int it = 0; it < 60; it++) {
         interp_track(tau, t0, dt, P, V, n, p, v, &inside);
         double dx = p[0] - obs[0], dy = p[1] - obs[1], dz = p[2] - obs[2];
         double R = sqrt(dx * dx + dy * dy + dz * dz);
-        double tn = tr - R / c;
+        double wm = (m0 * dx + m1 * dy + m2 * dz) / R;
+        double tn = tr - R / (cp - wm);
         if (fabs(tn - tau) < 1e-5) {
             tau = tn;
             break;
@@ -58,8 +63,9 @@ HD static inline double ratio_at(double tr, const double *obs, double t0, double
     double dx = p[0] - obs[0], dy = p[1] - obs[1], dz = p[2] - obs[2];
     double R = sqrt(dx * dx + dy * dy + dz * dz);
     double vr = (dx * v[0] + dy * v[1] + dz * v[2]) / R;
+    double ws = (s0 * dx + s1 * dy + s2 * dz) / R;
     *ok = inside;
-    return c / (c + vr);
+    return (ce - ws) / (ce + vr - ws);
 }
 
 // CPA over samples [lo, hi) with parabolic refinement; returns 0 if not enough samples.
@@ -171,8 +177,8 @@ HD static inline void score_one_trace(const float *Rrow, int nu, double u0, doub
 
 static int model_cpu(const double *obs, const double *t_expect, const int32_t *fidx, int64_t n, const double *P,
                      const double *V, const int64_t *f_start, const int32_t *f_len, const double *f_t0,
-                     const double *f_dt, double u0, double du, int nu, double c, double win, float *R,
-                     double *t_cpa, double *d_cpa) {
+                     const double *f_dt, double u0, double du, int nu, double c, double win,
+                     const double *atm, float *R, double *t_cpa, double *d_cpa) {
 #pragma omp parallel for schedule(dynamic, 16)
     for (int64_t i = 0; i < n; i++) {
         int fi = fidx[i];
@@ -192,7 +198,8 @@ static int model_cpu(const double *obs, const double *t_expect, const int32_t *f
         d_cpa[i] = d;
         for (int j = 0; j < nu; j++) {
             int ok;
-            double r = ratio_at(tdel + u0 + j * du, obs + 3 * i, f_t0[fi], f_dt[fi], Pf, Vf, np, c, &ok);
+            double r = ratio_at(tdel + u0 + j * du, obs + 3 * i, f_t0[fi], f_dt[fi], Pf, Vf, np, c,
+                                atm ? atm + 8 * i : 0, &ok);
             Rrow[j] = ok ? (float)r : NAN;
         }
     }
@@ -265,7 +272,8 @@ __global__ void k_cpa(const double *obs, const double *t_expect, const int32_t *
 
 __global__ void k_ratio(const double *obs, const int32_t *fidx, int64_t n, const double *P, const double *V,
                         const int64_t *f_start, const int32_t *f_len, const double *f_t0, const double *f_dt,
-                        double u0, double du, int nu, double c, const double *t_cpa, float *R) {
+                        double u0, double du, int nu, double c, const double *atm, const double *t_cpa,
+                        float *R) {
     int64_t idx = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
     if (idx >= n * (int64_t)nu) return;
     int64_t i = idx / nu;
@@ -278,7 +286,7 @@ __global__ void k_ratio(const double *obs, const int32_t *fidx, int64_t n, const
     int fi = fidx[i];
     int ok;
     double r = ratio_at(tdel + u0 + j * du, obs + 3 * i, f_t0[fi], f_dt[fi], P + 3 * f_start[fi],
-                        V + 3 * f_start[fi], f_len[fi], c, &ok);
+                        V + 3 * f_start[fi], f_len[fi], c, atm ? atm + 8 * i : 0, &ok);
     R[idx] = ok ? (float)r : NAN;
 }
 
@@ -314,7 +322,7 @@ static int grid(int64_t work, int block) { return (int)((work + block - 1) / blo
 static int model_gpu(const double *obs, const double *t_expect, const int32_t *fidx, int64_t n, const double *P,
                      const double *V, const int64_t *f_start, const int32_t *f_len, const double *f_t0,
                      const double *f_dt, int nflights, int64_t nrows, double u0, double du, int nu, double c,
-                     double win, float *R, double *t_cpa, double *d_cpa, int device) {
+                     double win, const double *atm, float *R, double *t_cpa, double *d_cpa, int device) {
     CK(cudaSetDevice(device));
     double *dP = 0, *dV = 0, *dt0 = 0, *ddt = 0;
     int64_t *dstart = 0;
@@ -323,27 +331,29 @@ static int model_gpu(const double *obs, const double *t_expect, const int32_t *f
         upload(&dlen, f_len, nflights) || upload(&dt0, f_t0, nflights) || upload(&ddt, f_dt, nflights))
         return -1;
     const int64_t chunk = 1 << 16;
-    double *dobs = 0, *dte = 0, *dtc = 0, *ddc = 0;
+    double *dobs = 0, *dte = 0, *dtc = 0, *ddc = 0, *dw = 0;
     int32_t *dfi = 0;
     float *dR = 0;
     int64_t cmax = n < chunk ? n : chunk;
     if (upload(&dobs, (double *)0, 3 * cmax) || upload(&dte, (double *)0, cmax) || upload(&dfi, (int32_t *)0, cmax) ||
-        upload(&dtc, (double *)0, cmax) || upload(&ddc, (double *)0, cmax) || upload(&dR, (float *)0, cmax * nu))
+        upload(&dtc, (double *)0, cmax) || upload(&ddc, (double *)0, cmax) || upload(&dR, (float *)0, cmax * nu) ||
+        (atm && upload(&dw, (double *)0, 8 * cmax)))
         return -1;
     for (int64_t s = 0; s < n; s += chunk) {
         int64_t m = n - s < chunk ? n - s : chunk;
         CK(cudaMemcpy(dobs, obs + 3 * s, 3 * m * sizeof(double), cudaMemcpyHostToDevice));
         CK(cudaMemcpy(dte, t_expect + s, m * sizeof(double), cudaMemcpyHostToDevice));
         CK(cudaMemcpy(dfi, fidx + s, m * sizeof(int32_t), cudaMemcpyHostToDevice));
+        if (atm) CK(cudaMemcpy(dw, atm + 8 * s, 8 * m * sizeof(double), cudaMemcpyHostToDevice));
         k_cpa<<<grid(m, 128), 128>>>(dobs, dte, dfi, m, dP, dstart, dlen, dt0, ddt, c, win, dtc, ddc);
-        k_ratio<<<grid(m * nu, 256), 256>>>(dobs, dfi, m, dP, dV, dstart, dlen, dt0, ddt, u0, du, nu, c, dtc, dR);
+        k_ratio<<<grid(m * nu, 256), 256>>>(dobs, dfi, m, dP, dV, dstart, dlen, dt0, ddt, u0, du, nu, c, dw, dtc, dR);
         CK(cudaGetLastError());
         CK(cudaMemcpy(t_cpa + s, dtc, m * sizeof(double), cudaMemcpyDeviceToHost));
         CK(cudaMemcpy(d_cpa + s, ddc, m * sizeof(double), cudaMemcpyDeviceToHost));
         CK(cudaMemcpy(R + s * nu, dR, m * nu * sizeof(float), cudaMemcpyDeviceToHost));
     }
     cudaFree(dP); cudaFree(dV); cudaFree(dstart); cudaFree(dlen); cudaFree(dt0); cudaFree(ddt);
-    cudaFree(dobs); cudaFree(dte); cudaFree(dfi); cudaFree(dtc); cudaFree(ddc); cudaFree(dR);
+    cudaFree(dobs); cudaFree(dte); cudaFree(dfi); cudaFree(dtc); cudaFree(ddc); cudaFree(dR); cudaFree(dw);
     return 0;
 }
 
@@ -403,15 +413,17 @@ extern "C" int dl_cuda_device_count(void) {
 extern "C" int dl_model(const double *obs, const double *t_expect, const int32_t *fidx, int64_t n, const double *P,
                         const double *V, const int64_t *f_start, const int32_t *f_len, const double *f_t0,
                         const double *f_dt, int32_t nflights, int64_t nrows, double u0, double du, int32_t nu,
-                        double c, double win, float *R, double *t_cpa, double *d_cpa, int device) {
+                        double c, double win, const double *atm, float *R, double *t_cpa, double *d_cpa,
+                        int device) {
 #ifdef __CUDACC__
     if (device >= 0)
         return model_gpu(obs, t_expect, fidx, n, P, V, f_start, f_len, f_t0, f_dt, nflights, nrows, u0, du, nu, c, win,
-                         R, t_cpa, d_cpa, device);
+                         atm, R, t_cpa, d_cpa, device);
 #endif
     (void)nflights;
     (void)nrows;
-    return model_cpu(obs, t_expect, fidx, n, P, V, f_start, f_len, f_t0, f_dt, u0, du, nu, c, win, R, t_cpa, d_cpa);
+    return model_cpu(obs, t_expect, fidx, n, P, V, f_start, f_len, f_t0, f_dt, u0, du, nu, c, win, atm, R, t_cpa,
+                     d_cpa);
 }
 
 extern "C" int dl_score_brightness(const float *R, int64_t n, int32_t nu, double u0, double du, const double *base,

@@ -109,12 +109,34 @@ def _day_range(case: Case):
 
 
 @njit(cache=True)
-def _cpa_tile(sidx, fi, x, y, h, elev, ox, oy, g, nc, rmax, d2max):
+def _keep(b, m, a, d2lo, d2hi, gsk, vlo, vhi):
+    """Emit a pass only if it is a true local minimum whose refined distance and speed are in band."""
+    if not (np.isfinite(b) and np.isfinite(a)):
+        return False
+    if gsk < vlo or gsk > vhi:
+        return False
+    den = b - 2.0 * m + a
+    d2 = m
+    if den > 0:
+        off = 0.5 * (b - a) / den
+        if off > 1.0:
+            off = 1.0
+        elif off < -1.0:
+            off = -1.0
+        d2 = m - 0.25 * (b - a) * off
+    return d2lo <= d2 <= d2hi
+
+
+@njit(cache=True)
+def _cpa_tile(sidx, fi, x, y, h, gs, elev, ox, oy, g, nc, rmax, d2lo, d2hi, vlo, vhi, mask):
     """CPA records for one tile.
 
     sidx: global sample indices for this tile, in track/time order (consecutive samples of a
     track have consecutive indices). elev: (nc, nc) cell elevations; cell (i, j) centre is
-    (ox + (i + .5) g, oy + (j + .5) g). Returns arrays (ci, cj, kmin, d2b, d2m, d2a).
+    (ox + (i + .5) g, oy + (j + .5) g). Only cells with mask != 0 are visited. A pass is
+    emitted when its refined CPA distance is in [sqrt(d2lo), sqrt(d2hi)] and the ground speed
+    at the CPA sample is in [vlo, vhi] (filtering here keeps memory bounded in busy tiles).
+    Returns arrays (cell, kmin, d2b, d2m, d2a).
     """
     ncell = nc * nc
     last_k = np.full(ncell, -10, np.int64)
@@ -123,8 +145,7 @@ def _cpa_tile(sidx, fi, x, y, h, elev, ox, oy, g, nc, rmax, d2max):
     d2_b = np.full(ncell, np.nan)
     d2_a = np.full(ncell, np.nan)
     prev_d2 = np.full(ncell, np.nan)
-    start_k = np.full(ncell, -1, np.int64)
-    cap = 1 << 16
+    cap = 1 << 14
     o_c = np.empty(cap, np.int64)
     o_k = np.empty(cap, np.int64)
     o_b = np.empty(cap)
@@ -143,11 +164,13 @@ def _cpa_tile(sidx, fi, x, y, h, elev, ox, oy, g, nc, rmax, d2max):
         for i in range(i0, i1 + 1):
             dx = px - (i + 0.5) * g
             for j in range(j0, j1 + 1):
+                c = i * nc + j
+                if mask[c] == 0:
+                    continue
                 dy = py - (j + 0.5) * g
                 hz = dx * dx + dy * dy
                 if hz > r2:
                     continue
-                c = i * nc + j
                 dz = h[k] - elev[i, j]
                 d2 = hz + dz * dz
                 if last_k[c] == k - 1 and fi[k] == fi[k - 1]:
@@ -160,7 +183,7 @@ def _cpa_tile(sidx, fi, x, y, h, elev, ox, oy, g, nc, rmax, d2max):
                         d2_a[c] = d2
                 else:
                     # close the previous pass on this cell
-                    if min_k[c] >= 0 and min_d2[c] <= d2max and np.isfinite(d2_b[c]) and np.isfinite(d2_a[c]):
+                    if min_k[c] >= 0 and _keep(d2_b[c], min_d2[c], d2_a[c], d2lo, d2hi, gs[min_k[c]], vlo, vhi):
                         if n_out == cap:
                             cap *= 2
                             o_c = _grow_i(o_c, cap)
@@ -174,7 +197,6 @@ def _cpa_tile(sidx, fi, x, y, h, elev, ox, oy, g, nc, rmax, d2max):
                         o_m[n_out] = min_d2[c]
                         o_a[n_out] = d2_a[c]
                         n_out += 1
-                    start_k[c] = k
                     min_d2[c] = d2
                     min_k[c] = k
                     d2_b[c] = np.nan
@@ -182,7 +204,7 @@ def _cpa_tile(sidx, fi, x, y, h, elev, ox, oy, g, nc, rmax, d2max):
                 prev_d2[c] = d2
                 last_k[c] = k
     for c in range(ncell):
-        if min_k[c] >= 0 and min_d2[c] <= d2max and np.isfinite(d2_b[c]) and np.isfinite(d2_a[c]):
+        if min_k[c] >= 0 and _keep(d2_b[c], min_d2[c], d2_a[c], d2lo, d2hi, gs[min_k[c]], vlo, vhi):
             if n_out == cap:
                 cap *= 2
                 o_c = _grow_i(o_c, cap)
@@ -349,9 +371,14 @@ def _tile_elev(tx, ty, tile, g, nc, dem: DEM):
     return dem.elevation(lat, lon).reshape(nc, nc), ox, oy
 
 
-def _cpa_records(S, sidx, elev, ox, oy, g, nc, rmax, c):
+def _cpa_records(S, sidx, elev, ox, oy, g, nc, rmax, c, dband=None, vband=None, mask=None):
     """CPA records with parabolic sub-sample refinement (see ``_cpa_tile``)."""
-    cc, kk, d2b, d2m, d2a = _cpa_tile(sidx, S.fi, S.x, S.y, S.h, elev, ox, oy, g, nc, rmax, rmax * rmax)
+    d2lo, d2hi = (0.0, rmax * rmax) if dband is None else (dband[0] ** 2, dband[1] ** 2)
+    vlo, vhi = (-np.inf, np.inf) if vband is None else vband
+    if mask is None:
+        mask = np.ones(nc * nc, np.uint8)
+    cc, kk, d2b, d2m, d2a = _cpa_tile(sidx, S.fi, S.x, S.y, S.h, S.gs, elev, ox, oy, g, nc, rmax, d2lo, d2hi,
+                                      float(vlo), float(vhi), mask)
     if len(cc) == 0:
         return None
     den = d2b - 2 * d2m + d2a
@@ -385,11 +412,12 @@ def _process_tile(key):
     stats = {}
     recs = []
     for k in range(nev):
-        rec = _cpa_records(S, sidx[k], elev, ox, oy, g, nc, G["rmax"][k], case.c)
+        e = ev[k]
+        rec = _cpa_records(S, sidx[k], elev, ox, oy, g, nc, G["rmax"][k], case.c, dband=e.slant_m,
+                           vband=(e.speed_ms[0] - 5.0, e.speed_ms[1] + 5.0))
         if rec is None:
             return stats, None
         cc, kk, d, tau, gs, trecv, gx, gy, cell = rec
-        e = ev[k]
         m = (gs >= e.speed_ms[0]) & (gs <= e.speed_ms[1]) & (d >= e.slant_m[0]) & (d <= e.slant_m[1])
         if k == 0 and s.utc_window is not None:
             m &= (trecv >= s.utc_window[0]) & (trecv <= s.utc_window[1])
@@ -427,11 +455,15 @@ def _process_tile(key):
                 "v2": R2["gs"][r2]}
         sil = case.silence
         if sil.enabled and sil.mode == "cpa":
-            si = G["SA"].gather(tx, ty, S.x, S.y, G["rsil"])
-            orec = _cpa_records(S, si, elev, ox, oy, g, nc, G["rsil"], case.c)
             qcell = cell[r1]
             w_lo = np.minimum(res["t1"], res["t2"])
             w_hi = np.maximum(res["t1"], res["t2"])
+            # only survivor cells, only samples whose sound could arrive inside the quiet windows
+            si = G["SA"].gather(tx, ty, S.x, S.y, G["rsil"])
+            si = si[(S.t[si] >= w_lo.min() - 120.0) & (S.t[si] <= w_hi.max() + 30.0)]
+            mask = np.zeros(nc * nc, np.uint8)
+            mask[R1["cc"][r1]] = 1
+            orec = _cpa_records(S, si, elev, ox, oy, g, nc, G["rsil"], case.c, mask=mask)
             thr = sil.ratio * np.maximum(res["d1"], res["d2"])
             if orec is None:
                 hits = np.zeros(len(qcell), np.int32)
@@ -464,6 +496,17 @@ def _process_tile(key):
             stats["silent"] = int(quiet.sum())
             stats["silent_cells"] = len(np.unique(cell[r1][quiet]))
     return stats, res
+
+
+def _default_workers(gb_per_worker: float = 1.5) -> int:
+    """CPU count minus two, capped so workers fit in currently available memory."""
+    try:
+        with open("/proc/meminfo") as f:
+            avail_kb = next(int(l.split()[1]) for l in f if l.startswith("MemAvailable:"))
+        by_mem = int(avail_kb / 1e6 / gb_per_worker)
+    except (OSError, StopIteration):
+        by_mem = 8
+    return max(1, min(mp.cpu_count() - 2, by_mem))
 
 
 def run(case: Case, log=print) -> pl.DataFrame:
@@ -533,7 +576,7 @@ def run(case: Case, log=print) -> pl.DataFrame:
     if J is not None:
         _G["J"], _G["JI"] = J, _TileIndex(J["x"], J["y"], tile)
     work = [int(k) for k in work]
-    nproc = s.workers or max(1, mp.cpu_count() - 2)
+    nproc = s.workers or _default_workers()
     totals: dict[str, int] = {}
     results = []
     log(f"  scanning tiles on {nproc} processes")

@@ -49,7 +49,7 @@ class Search:
     sample_dt: float = 3.0
     offset_tol_s: float = 6.0
     exclude_engines: tuple[str, ...] = ("J", "R")
-    max_alt_ft: float = 15000.0
+    max_alt_ft: float = 35000.0       # props up to FL350; the slant band rejects anything too high
     speed_margin_ms: float = 15.0
     workers: int = 0
 
@@ -59,12 +59,14 @@ class Score:
     win_s: float = 1.0
     hop_s: float = 0.25
     dt_sweep: tuple[float, float, float] = (-3.0, 3.0, 0.1)
-    f0_sweep_frac: float = 0.015
+    f0_sweep_frac: float = 0.06      # straight-line f0 estimates are only good to a few %
     f0_step_hz: float = 0.05
     refine_m: float = 100.0
     model_dt: float = 0.1
     freq_tol_bins: int = 1
-    mode: str = "locked"             # "locked" (event-1 sets the clock) or "joint"
+    mode: str = "joint"              # "joint": one shared clock shift for both events (locked offset);
+                                     # "locked": event 1 alone sets the clock shift
+    line_suppress_s: float = 20.0    # remove tones steadier than ~this/2 s before scoring (0 = off)
     trace_sigma_hz: float = 1.5
     dem_res: int = 90               # 30 for local heat maps; 90 keeps CONUS-wide scoring cheap
 
@@ -80,7 +82,9 @@ class Case:
     day: str
     c: float = 343.0
     altitude: str = "auto"
-    wind_ms: tuple[float, float] | None = None   # (east, north) wind the air mass moves toward
+    atmosphere: str = "gfs"          # "gfs" (winds/temperature aloft), "asos" (surface wind, as the video),
+                                     # "fixed" (wind_ms), "none" (still air at c)
+    wind_ms: tuple[float, float] | None = None   # for "fixed": (east, north) m/s the air moves toward
     events: list[Event] = field(default_factory=list)
     search: Search = field(default_factory=Search)
     silence: Silence = field(default_factory=Silence)
@@ -137,6 +141,7 @@ def load(path: str | Path) -> Case:
         audio=p("audio", "audio.wav"), adsb=p("adsb", "data/adsb"), cache=p("cache", "data/cache"),
         out=p("out", f"out/{path.stem}"), day=d["day"], c=float(d.get("c", 343.0)),
         altitude=d.get("altitude", "auto"), events=events,
+        atmosphere=d.get("atmosphere", d.get("wind", "fixed" if d.get("wind_ms") else "gfs")),
         wind_ms=tuple(d["wind_ms"]) if d.get("wind_ms") else None,
         search=Search(**s), silence=Silence(**d.get("silence", {})), score=Score(**sc),
     )

@@ -88,29 +88,39 @@ def _interp_track(tq, t0, dt, P, V):
     return px, py, pz, vx, vy, vz, inside
 
 
+def still_air(c: float = C_SOUND) -> np.ndarray:
+    """Atmosphere vector for ``track_doppler_ratio``: [c_dop, w_src(3), c_path, w_path(3)]."""
+    return np.array([c, 0.0, 0.0, 0.0, c, 0.0, 0.0, 0.0])
+
+
 @njit(cache=True)
-def track_doppler_ratio(t_recv, obs, t0, dt, P, V, c):
+def track_doppler_ratio(t_recv, obs, t0, dt, P, V, atm):
     """f/f0 heard by ``obs`` at receive times ``t_recv`` from a sampled track.
 
-    P, V: (n, 3) positions / velocities in a Cartesian frame (ECEF metres), sampled every
-    ``dt`` seconds from ``t0``. Emission time solved by fixed-point iteration
-    ``tau <- t - |P(tau) - obs| / c`` (a contraction since |v_r| < c).
-    Returns (ratio, range_m, valid) arrays; valid=False where the emission time falls
-    outside the track.
+    P, V: (n, 3) positions / ground velocities in a Cartesian frame (ECEF metres), sampled
+    every ``dt`` seconds from ``t0``. ``atm`` = [c_e, w_s(3), c_p, w_m(3)] (see atmos.py):
+    with d = unit(observer -> aircraft), f/f0 = (c_e - w_s.d) / (c_e + V.d - w_s.d) and the
+    travel time is R / (c_p - w_m.d). Still air: ``still_air(c)``.
+    The emission time is solved by fixed-point iteration (a contraction since |v_r| < c).
+    Returns (ratio, range_m, valid); valid=False where the emission time falls outside
+    the track.
     """
     m = t_recv.shape[0]
     ratio = np.empty(m)
     rng = np.empty(m)
     valid = np.zeros(m, dtype=np.bool_)
+    ce = atm[0]
+    cp = atm[4]
     for j in range(m):
-        tau = t_recv[j] - 2000.0 / c
+        tau = t_recv[j] - 2000.0 / cp
         for _ in range(60):
             px, py, pz, vx, vy, vz, inside = _interp_track(tau, t0, dt, P, V)
             dx = px - obs[0]
             dy = py - obs[1]
             dz = pz - obs[2]
             R = np.sqrt(dx * dx + dy * dy + dz * dz)
-            tau_new = t_recv[j] - R / c
+            wm = (atm[5] * dx + atm[6] * dy + atm[7] * dz) / R
+            tau_new = t_recv[j] - R / (cp - wm)
             if abs(tau_new - tau) < 1e-5:
                 tau = tau_new
                 break
@@ -121,7 +131,8 @@ def track_doppler_ratio(t_recv, obs, t0, dt, P, V, c):
         dz = pz - obs[2]
         R = np.sqrt(dx * dx + dy * dy + dz * dz)
         vr = (dx * vx + dy * vy + dz * vz) / R
-        ratio[j] = c / (c + vr)
+        ws = (atm[1] * dx + atm[2] * dy + atm[3] * dz) / R
+        ratio[j] = (ce - ws) / (ce + vr - ws)
         rng[j] = R
         valid[j] = inside
     return ratio, rng, valid
@@ -165,13 +176,13 @@ def track_cpa(obs, t0, dt, P, c):
 
 
 @njit(parallel=True, cache=True)
-def many_track_doppler_ratio(t_recv, obs, t0, dt, P, V, c):
+def many_track_doppler_ratio(t_recv, obs, t0, dt, P, V, atm):
     """``track_doppler_ratio`` for many observers (rows of ``obs``) on one track."""
     k = obs.shape[0]
     m = t_recv.shape[0]
     out = np.empty((k, m))
     for i in prange(k):
-        r, _, ok = track_doppler_ratio(t_recv, obs[i], t0, dt, P, V, c)
+        r, _, ok = track_doppler_ratio(t_recv, obs[i], t0, dt, P, V, atm)
         for j in range(m):
             out[i, j] = r[j] if ok[j] else np.nan
     return out

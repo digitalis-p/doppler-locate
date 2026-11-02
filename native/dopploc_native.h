@@ -20,11 +20,14 @@ int dl_cuda_device_count(void);
 
 /* For each candidate i: CPA of flight fidx[i] within +-win s of t_expect[i] (delayed CPA time
  * t_cpa[i], slant distance d_cpa[i]) and the ratio f/f0 heard at receive times
- * t_cpa[i] + u0 + j*du, j < nu, written to R[i*nu + j] (NaN outside the track). */
+ * t_cpa[i] + u0 + j*du, j < nu, written to R[i*nu + j] (NaN outside the track).
+ * atm: per-candidate atmosphere rows (n x 8) [c_e, w_s(3), c_p, w_m(3)] or NULL (still air at c);
+ * with d = unit(obs -> aircraft): f/f0 = (c_e - w_s.d) / (c_e + v.d - w_s.d), travel time
+ * R / (c_p - w_m.d). */
 int dl_model(const double *obs, const double *t_expect, const int32_t *fidx, int64_t n,
              const double *P, const double *V, const int64_t *f_start, const int32_t *f_len,
              const double *f_t0, const double *f_dt, int32_t nflights, int64_t nrows,
-             double u0, double du, int32_t nu, double c, double win,
+             double u0, double du, int32_t nu, double c, double win, const double *atm,
              float *R, double *t_cpa, double *d_cpa, int device);
 
 /* Brightness score. For candidate i, shift deltas[d] and fundamental f0s[f]:

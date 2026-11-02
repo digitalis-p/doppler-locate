@@ -28,7 +28,7 @@ def tile_name(lat_floor: int, lon_floor: int, res: int) -> str:
 
 
 class DEM:
-    def __init__(self, cache_dir: Path, res: int = 90, max_tiles_in_memory: int = 48):
+    def __init__(self, cache_dir: Path, res: int = 90, max_tiles_in_memory: int = 8):
         self.dir = Path(cache_dir) / f"glo{res}"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.res = res
@@ -82,7 +82,7 @@ class DEM:
             val = None
         else:
             import rasterio
-            with rasterio.open(path) as ds:
+            with rasterio.Env(GDAL_CACHEMAX=32), rasterio.open(path) as ds:
                 arr = ds.read(1).astype(np.float32)
                 tr = ds.transform
             arr[~np.isfinite(arr) | (arr < -1000)] = 0.0

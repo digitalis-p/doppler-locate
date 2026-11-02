@@ -34,21 +34,23 @@ def setup():
         obs[i] = sm.P[k] + [rng.uniform(-3000, 3000), rng.uniform(-3000, 3000), -1500 + rng.uniform(-50, 50)]
         t_exp[i] = sm.t0 + k * sm.dt + 5
     u = np.arange(-65, 65, 0.1)
-    return flights, fids, obs, t_exp, u
+    w = rng.uniform(-12, 12, (n, 3)) * [1, 1, 0.1]
+    atm = np.c_[rng.uniform(325, 350, n), w, rng.uniform(330, 350, n), 0.5 * w]
+    return flights, fids, obs, t_exp, u, atm
 
 
 @pytest.mark.parametrize("device", ["cuda", "cpu"])
 def test_model_and_sweep_match_numba(setup, device, monkeypatch):
     if device == "cuda" and native.backend() != "cuda":
         pytest.skip("no GPU")
-    flights, fids, obs, t_exp, u = setup
+    flights, fids, obs, t_exp, u, atm = setup
     ref = {}
     for f in np.unique(fids):
         jj = np.flatnonzero(fids == f)
-        ref[f] = (jj, *score.model_ratios(obs[jj], flights[f], t_exp[jj], u, 343.0))
+        ref[f] = (jj, *score.model_ratios(obs[jj], flights[f], t_exp[jj], u, 343.0, atm[jj]))
     monkeypatch.setattr(native, "_dev", device)
     pack = native.TrackPack(flights)
-    tc, dc, R = native.model(pack, fids, obs, t_exp, u, 343.0)
+    tc, dc, R = native.model(pack, fids, obs, t_exp, u, 343.0, atm=atm)
     for f, (jj, tcr, dcr, Rr) in ref.items():
         np.testing.assert_allclose(tc[jj], tcr, atol=1e-6)
         np.testing.assert_allclose(dc[jj], dcr, atol=1e-6)

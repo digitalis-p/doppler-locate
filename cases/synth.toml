@@ -7,6 +7,7 @@ cache = "data/cache"
 audio = "out/synth/synthetic.wav"
 out = "out/synth"
 c = 343.0
+wind = "none"   # synthetic audio is rendered in still air
 
 [search]
 offset_tol_s = 6.0

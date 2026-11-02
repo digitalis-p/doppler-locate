@@ -35,7 +35,7 @@ def _load():
                       P(np.int64, flags="C"))
     lib.dl_cuda_device_count.restype = C.c_int
     lib.dl_model.argtypes = [d, d, i32, C.c_int64, d, d, i64, i32, d, d, C.c_int32, C.c_int64,
-                             C.c_double, C.c_double, C.c_int32, C.c_double, C.c_double, f, d, d, C.c_int]
+                             C.c_double, C.c_double, C.c_int32, C.c_double, C.c_double, d, f, d, d, C.c_int]
     lib.dl_score_brightness.argtypes = [f, C.c_int64, C.c_int32, C.c_double, C.c_double, d, d, C.c_int32, d,
                                         C.c_int32, d, C.c_int32, d, C.c_int32, f, C.c_int32, C.c_double,
                                         C.c_double, f, i32, C.c_int]
@@ -64,7 +64,7 @@ def _c(a, dt):
 class TrackPack:
     """Many resampled tracks concatenated for the native model."""
 
-    def __init__(self, sampled: dict, wind_ecef=None):
+    def __init__(self, sampled: dict):
         self.ids = list(sampled)
         self.index = {k: i for i, k in enumerate(self.ids)}
         lens = np.array([len(sampled[k].gs) for k in self.ids], np.int32)
@@ -73,13 +73,10 @@ class TrackPack:
         self.t0 = np.array([sampled[k].t0 for k in self.ids], np.float64)
         self.dt = np.array([sampled[k].dt for k in self.ids], np.float64)
         self.P = _c(np.concatenate([sampled[k].P for k in self.ids]), np.float64)
-        V = np.concatenate([sampled[k].V for k in self.ids])
-        if wind_ecef is not None:
-            V = V - wind_ecef
-        self.V = _c(V, np.float64)
+        self.V = _c(np.concatenate([sampled[k].V for k in self.ids]), np.float64)
 
 
-def model(pack: TrackPack, fids, obs, t_expect, u_grid, c, win=90.0):
+def model(pack: TrackPack, fids, obs, t_expect, u_grid, c, win=90.0, atm=None):
     lib = _load()
     n = len(t_expect)
     fidx = _c([pack.index[f] for f in fids], np.int32)
@@ -88,7 +85,9 @@ def model(pack: TrackPack, fids, obs, t_expect, u_grid, c, win=90.0):
     d_cpa = np.empty(n)
     rc = lib.dl_model(_c(obs, np.float64), _c(t_expect, np.float64), fidx, n, pack.P, pack.V, pack.start,
                       pack.len, pack.t0, pack.dt, len(pack.ids), len(pack.P), float(u_grid[0]),
-                      float(u_grid[1] - u_grid[0]), len(u_grid), float(c), float(win), R, t_cpa, d_cpa, _device())
+                      float(u_grid[1] - u_grid[0]), len(u_grid), float(c), float(win),
+                      _c(np.tile([c, 0, 0, 0, c, 0, 0, 0], (n, 1)) if atm is None else atm, np.float64), R, t_cpa,
+                      d_cpa, _device())
     if rc:
         raise RuntimeError(f"dl_model failed ({rc})")
     return t_cpa, d_cpa, R

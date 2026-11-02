@@ -12,6 +12,11 @@ c = 343.0
 [search]
 offset_tol_s = 5.0
 
+[score]
+# event-1 clock sweep: absorbs the bias of the straight-line midpoint estimate (manoeuvres, wind);
+# event 2 stays locked to flight geometry. The video's own slider shows shifts up to ~7 s.
+dt_sweep = [-8.0, 8.0, 0.1]
+
 [silence]
 enabled = true
 mode = "cpa"     # video rule: other non-jet CPA between the events, nearer than max(d1, d2)
