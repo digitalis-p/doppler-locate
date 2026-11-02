@@ -119,3 +119,64 @@ class DEM:
             out[sel] = ((1 - wr) * (1 - wc) * arr[r0, c0] + (1 - wr) * wc * arr[r0, c0 + 1]
                         + wr * (1 - wc) * arr[r0 + 1, c0] + wr * wc * arr[r0 + 1, c0 + 1])
         return out
+
+
+class ElevationLattice:
+    """Terrain height on the search's Albers lattice (cell centres at (i + .5) g), cached as an
+    int16 memmap. Building it once (~3 min from GLO-90) replaces per-tile DEM sampling."""
+
+    def __init__(self, path: Path):
+        meta = np.load(Path(path).with_suffix(".meta.npy"))
+        self.gx0, self.gy0, self.g = int(meta[0]), int(meta[1]), float(meta[2])
+        self.a = np.load(path, mmap_mode="r")  # (nx, ny): [x index, y index]
+
+    @staticmethod
+    def path_for(cache: Path, g: float) -> Path:
+        return Path(cache) / "elev" / f"conus_albers_{int(g)}m.npy"
+
+    @classmethod
+    def build(cls, cache: Path, g: float = 200.0, bbox=(-126.0, 23.5, -65.5, 50.5), log=print) -> "ElevationLattice":
+        from . import geo
+        path = cls.path_for(cache, g)
+        if path.exists():
+            return cls(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lon = np.r_[np.linspace(bbox[0], bbox[2], 400), np.linspace(bbox[0], bbox[2], 400),
+                    np.full(200, bbox[0]), np.full(200, bbox[2])]
+        lat = np.r_[np.full(400, bbox[1]), np.full(400, bbox[3]), np.linspace(bbox[1], bbox[3], 200),
+                    np.linspace(bbox[1], bbox[3], 200)]
+        x, y = geo.to_grid(lon, lat)
+        gx0, gx1 = int(np.floor(np.min(x) / g)), int(np.ceil(np.max(x) / g))
+        gy0, gy1 = int(np.floor(np.min(y) / g)), int(np.ceil(np.max(y) / g))
+        nx, ny = gx1 - gx0, gy1 - gy0
+        log(f"  building elevation lattice {nx} x {ny} at {g:g} m -> {path}")
+        dem = DEM(Path(cache) / "dem", res=90, max_tiles_in_memory=160)
+        tmp = path.with_suffix(".part.npy")
+        out = np.lib.format.open_memmap(tmp, mode="w+", dtype=np.int16, shape=(nx, ny))
+        ys = (gy0 + np.arange(ny) + 0.5) * g
+        step = 200
+        for i0 in range(0, nx, step):
+            i1 = min(nx, i0 + step)
+            X, Y = np.meshgrid((gx0 + np.arange(i0, i1) + 0.5) * g, ys, indexing="ij")
+            lo, la = geo.from_grid(X.ravel(), Y.ravel())
+            inside = (la >= bbox[1] - 0.5) & (la <= bbox[3] + 0.5) & (lo >= bbox[0] - 0.5) & (lo <= bbox[2] + 0.5)
+            e = np.zeros(X.size)
+            e[inside] = dem.elevation(la[inside], lo[inside])
+            out[i0:i1] = np.clip(np.round(e), -32000, 32000).astype(np.int16).reshape(i1 - i0, ny)
+            if (i0 // step) % 20 == 0:
+                log(f"    columns {i0}/{nx}")
+        out.flush()
+        del out
+        np.save(path.with_suffix(".meta.npy"), np.array([gx0, gy0, g]))
+        tmp.rename(path)
+        return cls(path)
+
+    def block(self, gx, gy, n):
+        """(n, n) float array for lattice cells gx..gx+n-1, gy..gy+n-1 (0 outside the lattice)."""
+        out = np.zeros((n, n), np.float64)
+        i0, j0 = gx - self.gx0, gy - self.gy0
+        a0, b0 = max(0, i0), max(0, j0)
+        a1, b1 = min(self.a.shape[0], i0 + n), min(self.a.shape[1], j0 + n)
+        if a1 > a0 and b1 > b0:
+            out[a0 - i0:a1 - i0, b0 - j0:b1 - j0] = self.a[a0:a1, b0:b1]
+        return out

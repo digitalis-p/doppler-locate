@@ -171,18 +171,40 @@ def profile_ranges(t, f, fit: Fit, c: float = physics.C_SOUND, rel: float = 0.5,
     }
 
 
-def event_toml(name: str, fit: Fit, ranges: dict, harmonics, half_width: float = 60.0,
-               speed_pad: float = 5.0, slant_pad_frac: float = 0.15) -> str:
+def fit_trace(t, f, harmonic: int = 1, c: float = physics.C_SOUND, rel: float = 0.5, abs_hz: float = 0.3):
+    """Fit a traced curve, keep the points near the fit, profile the ranges on those.
+    Returns (fit, ranges, inlier_mask)."""
+    t = np.asarray(t, float)
+    f = np.asarray(f, float)
+    fit = fit_flyby(t, f, harmonic, c=c)
+    res = fit.curve(t, c) - f
+    inl = np.abs(res) < max(4 * 1.4826 * np.median(np.abs(res)), 0.5)
+    return fit, profile_ranges(t[inl], f[inl], fit, c=c, rel=rel, abs_hz=abs_hz), inl
+
+
+def event_dict(name: str, fit: Fit, ranges: dict, harmonics, half_width: float = 60.0,
+               speed_pad: float = 5.0, slant_pad_frac: float = 0.15) -> dict:
+    """An [[event]] table: the fit's CPA and f0, padded speed and slant ranges."""
     v0, v1 = ranges["speed_ms"]
     d0, d1 = ranges["slant_m"]
+    return {"name": name, "audio_cpa": round(float(fit.t_cpa), 2), "f0": round(float(fit.f0), 3),
+            "harmonics": [int(h) for h in harmonics],
+            "speed_ms": [round(max(0.0, v0 - speed_pad), 1), round(v1 + speed_pad, 1)],
+            "slant_m": [float(round(d0 * (1 - slant_pad_frac))), float(round(d1 * (1 + slant_pad_frac)))],
+            "half_width_s": float(round(half_width))}
+
+
+def event_toml(name: str, fit: Fit, ranges: dict, harmonics, half_width: float = 60.0,
+               speed_pad: float = 5.0, slant_pad_frac: float = 0.15) -> str:
+    e = event_dict(name, fit, ranges, harmonics, half_width, speed_pad, slant_pad_frac)
     return "\n".join([
         "[[event]]",
         f'name = "{name}"',
-        f"audio_cpa = {fit.t_cpa:.2f}",
-        f"f0 = {fit.f0:.3f}",
-        f"harmonics = {list(harmonics)}",
-        f"speed_ms = [{max(0, v0 - speed_pad):.1f}, {v1 + speed_pad:.1f}]",
-        f"slant_m = [{d0 * (1 - slant_pad_frac):.0f}, {d1 * (1 + slant_pad_frac):.0f}]",
+        f"audio_cpa = {e['audio_cpa']:.2f}",
+        f"f0 = {e['f0']:.3f}",
+        f"harmonics = {e['harmonics']}",
+        f"speed_ms = [{e['speed_ms'][0]:.1f}, {e['speed_ms'][1]:.1f}]",
+        f"slant_m = [{e['slant_m'][0]:.0f}, {e['slant_m'][1]:.0f}]",
         f"half_width_s = {half_width:.0f}",
         f"# fit: v={fit.v:.1f} m/s d={fit.d:.0f} m rms={fit.rms:.2f} Hz on harmonic {fit.harmonic}",
     ])

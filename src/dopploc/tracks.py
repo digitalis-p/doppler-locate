@@ -79,7 +79,10 @@ def load_points(adsb_dir: Path, t_range=None, bbox=None, exclude_engines=DEFAULT
         q = q.filter(~pl.col("engine").is_in(list(exclude_engines)))
     if max_alt_ft is not None:
         q = q.filter(pl.coalesce("alt_baro_ft", "alt_geom_ft") <= max_alt_ft)
-    return q.sort("icao", "t").collect()
+    # total order: duplicate timestamps otherwise arrive in scan order, which varies run to run,
+    # and split_tracks keeps the first of each duplicate
+    return q.sort("icao", "t", "lat", "lon", "alt_baro_ft", "alt_geom_ft", "gs_kt", "track_deg",
+                  nulls_last=True).collect()
 
 
 def altitude_msl(df: pl.DataFrame, geoid: geo.Geoid | None, mode: str = "auto") -> np.ndarray:

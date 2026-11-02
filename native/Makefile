@@ -9,10 +9,10 @@ HOSTFLAGS := -O3 -march=native -fopenmp -fPIC
 
 all: $(OUT)
 
-$(OUT): dopploc_native.cu dopploc_native.h
+$(OUT): dopploc_native.cu dopploc_search.cu dopploc_native.h
 	mkdir -p $(dir $(OUT))
 	$(NVCC) -O3 -std=c++17 -shared -arch=native --use_fast_math -allow-unsupported-compiler \
-	    -Xcompiler "$(HOSTFLAGS)" -o $@ dopploc_native.cu -lgomp
+	    -Xcompiler "$(HOSTFLAGS)" -o $@ dopploc_native.cu dopploc_search.cu -lgomp
 
 cpu: dopploc_native.cu dopploc_native.h
 	mkdir -p $(dir $(OUT))

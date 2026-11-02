@@ -16,6 +16,8 @@ utc_window = ["2026-09-08T20:35:00Z", "2026-09-08T20:41:00Z"]
 [score]
 dt_sweep = [-3.0, 3.0, 0.1]
 trace_sigma_hz = 3.0
+f0_sweep_frac = 0.04
+f0_step_hz = 0.5
 
 [[event]]
 name = "S1"

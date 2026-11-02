@@ -19,8 +19,14 @@ peakfile=$(mktemp)
   done
 ) &
 mon=$!
-systemd-run --user --scope --quiet --unit="$unit" -p MemoryMax="$cap" -p MemorySwapMax=1G "$@"
-rc=$?
+# SIGTERM / SIGINT to this script stops the whole scope (the GUI's Cancel relies on it)
+trap 'systemctl --user stop "$unit.scope" 2>/dev/null' TERM INT
+systemd-run --user --scope --quiet --unit="$unit" -p MemoryMax="$cap" -p MemorySwapMax=1G "$@" &
+child=$!
+while true; do
+  wait "$child"; rc=$?
+  kill -0 "$child" 2>/dev/null || break
+done
 wait "$mon" 2>/dev/null
 peak=$(cat "$peakfile" 2>/dev/null || echo 0)
 rm -f "$peakfile"

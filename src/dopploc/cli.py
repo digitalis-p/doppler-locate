@@ -68,14 +68,11 @@ def cmd_fit(a):
     if a.t1 is not None:
         sel &= t <= a.t1
     t, f = t[sel], f[sel]
-    fit = measure.fit_flyby(t, f, h, c=a.c)
-    res = fit.curve(t, a.c) - f
-    inl = np.abs(res) < max(4 * 1.4826 * np.median(np.abs(res)), 0.5)
+    fit, rng, inl = measure.fit_trace(t, f, h, c=a.c, rel=a.rel, abs_hz=a.abs_hz)
     print(f"{inl.sum()}/{len(t)} trace points within the inlier band")
     t, f = t[inl], f[inl]
     print(f"fit: f0={fit.f0:.3f} Hz  v={fit.v:.1f} m/s ({fit.v / 0.514444:.0f} kt)  d={fit.d:.0f} m  "
           f"t_cpa={fit.t_cpa:.2f} s  rms={fit.rms:.2f} Hz")
-    rng = measure.profile_ranges(t, f, fit, c=a.c, rel=a.rel, abs_hz=a.abs_hz)
     print(f"ranges (rms <= {rng['threshold_hz']:.2f} Hz): speed {rng['speed_ms']}, slant {rng['slant_m']}, "
           f"f0 {rng['f0']}, audio_cpa {rng['audio_cpa']}")
     print()

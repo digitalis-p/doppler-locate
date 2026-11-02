@@ -52,6 +52,8 @@ class Search:
     max_alt_ft: float = 35000.0       # props up to FL350; the slant band rejects anything too high
     speed_margin_ms: float = 15.0
     workers: int = 0
+    elevation_lattice: bool = True   # cached CONUS terrain on the search lattice (built once)
+    gpu: bool = True                 # CUDA search when the native CUDA library is built
 
 
 @dataclass

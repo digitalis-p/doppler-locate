@@ -235,7 +235,7 @@ def _grow_f(a, cap):
     return b
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _pair_offsets(c1, t1, c2, t2, offset, tol):
     """All (i, j) with c1[i] == c2[j] and |t2[j] - t1[i] - offset| <= tol.
 
@@ -257,7 +257,7 @@ def _pair_offsets(c1, t1, c2, t2, offset, tol):
     return np.array(out_i, np.int64), np.array(out_j, np.int64)
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _silence_cpa(qcell, w_lo, w_hi, f1, f2, thr, ocell, ot, od, ofi):
     """Video rule: count other flights' CPA records in the same cell inside [w_lo, w_hi]
     and nearer than thr. ocell must be sorted."""
@@ -365,6 +365,9 @@ class _TileIndex:
 
 def _tile_elev(tx, ty, tile, g, nc, dem: DEM):
     ox, oy = tx * tile, ty * tile
+    lat_ = _G.get("lattice")
+    if lat_ is not None and abs(lat_.g - g) < 1e-9:
+        return lat_.block(int(round(ox / g)), int(round(oy / g)), nc), ox, oy
     i = np.arange(nc)
     X, Y = np.meshgrid(ox + (i + 0.5) * g, oy + (i + 0.5) * g, indexing="ij")
     lon, lat = geo.from_grid(X.ravel(), Y.ravel())
@@ -512,6 +515,11 @@ def _default_workers(gb_per_worker: float = 1.5) -> int:
 def run(case: Case, log=print) -> pl.DataFrame:
     """Run the coarse search and write ``<out>/candidates.parquet``."""
     s = case.search
+    if s.gpu and (not case.silence.enabled or case.silence.mode == "cpa"):
+        from . import search_gpu
+        if search_gpu.available():
+            log("search backend: cuda")
+            return search_gpu.run(case, log=log)
     t_start = time.time()
     ev = case.events
     vmax = max(e.speed_ms[1] for e in ev) + s.speed_margin_ms
@@ -556,7 +564,8 @@ def run(case: Case, log=print) -> pl.DataFrame:
 
     dem = DEM(case.cache / "dem", res=90)
     tiles_1deg = set()
-    for k in work:
+    work_for_dem = work if not s.elevation_lattice else []
+    for k in work_for_dem:
         tx, ty = _key_xy(k)
         cx = np.array([tx, tx + 1, tx, tx + 1]) * tile
         cy = np.array([ty, ty, ty + 1, ty + 1]) * tile
@@ -564,11 +573,14 @@ def run(case: Case, log=print) -> pl.DataFrame:
         for la in range(int(np.floor(lat.min())), int(np.floor(lat.max())) + 1):
             for lo in range(int(np.floor(lon.min())), int(np.floor(lon.max())) + 1):
                 tiles_1deg.add((la, lo))
-    log(f"  DEM: {len(tiles_1deg)} GLO-90 tiles (cached under {dem.dir})")
-    dem.prefetch(tiles_1deg)
+    if tiles_1deg:
+        log(f"  DEM: {len(tiles_1deg)} GLO-90 tiles (cached under {dem.dir})")
+        dem.prefetch(tiles_1deg)
 
     _G.clear()
-    _G.update(S=S, SI=SI, case=case, tile=tile, nc=nc, rmax=rmax, dem=dem, rsil=rsil)
+    from .dem import ElevationLattice
+    lattice = ElevationLattice.build(case.cache, s.grid_m, log=log) if s.elevation_lattice else None
+    _G.update(S=S, SI=SI, case=case, tile=tile, nc=nc, rmax=rmax, dem=dem, rsil=rsil, lattice=lattice)
     if len(ev) >= 2 and case.silence.enabled and case.silence.mode == "cpa":
         _G["SA"] = _TileIndex(S.x, S.y, tile)
     if A is not None:
