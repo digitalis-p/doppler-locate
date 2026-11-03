@@ -1,0 +1,47 @@
+# Jets experiment: the same events as oyster.toml, but jets stay in the candidate search
+# (exclude_engines = ["R"] instead of the default ["J", "R"]), to measure what admitting
+# jet traffic costs in candidates and ranking.
+# The video's challenge recording (https://youtu.be/4CxVxuMVkMc, 60 min, "Unknown location - raw audio").
+# "Filmed 9/8/26" somewhere in the continental US. Events measured independently with
+#   dopploc trace/fit (see README) -- not copied from the video.
+name = "oyster-with-jets"
+day = "2026-09-08"
+adsb = "data/adsb/2026-09-08"
+cache = "data/cache"
+audio = "data/recording/recording_4CxVxuMVkMc.webm"
+out = "out/oyster_jets"
+c = 343.0
+
+[search]
+exclude_engines = ["R"]   # keep jets
+offset_tol_s = 8.0   # straight-line midpoints carry a few s of wind / manoeuvre bias (w*d/v^2)
+
+[score]
+# event-1 clock sweep: absorbs the bias of the straight-line midpoint estimate (manoeuvres, wind);
+# event 2 stays locked to flight geometry. The video's own slider shows shifts up to ~7 s.
+dt_sweep = [-8.0, 8.0, 0.1]
+
+[silence]
+enabled = true
+mode = "cpa"     # video rule: other non-jet CPA between the events, nearer than max(d1, d2)
+ratio = 1.0
+
+[[event]]
+name = "E1"                 # loud pass with 3 harmonics, ~2156 s
+audio_cpa = 2155.80
+f0 = 112.735
+harmonics = [1, 2, 3]
+speed_ms = [129.7, 151.7]
+slant_m = [4757, 8492]
+half_width_s = 60
+# fit: v=140.7 m/s d=6428 m rms=0.26 Hz on harmonic 1
+
+[[event]]
+name = "E2"                 # ~3072 s
+audio_cpa = 3072.36
+f0 = 134.415
+harmonics = [1, 2]
+speed_ms = [75.9, 119.9]
+slant_m = [1257, 4489]
+half_width_s = 60
+# fit: v=92.9 m/s d=2242 m rms=0.58 Hz on harmonic 1

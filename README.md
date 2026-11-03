@@ -55,6 +55,16 @@ implemented but not yet validated on a case where the aircraft is in the data.
 The margin over the runner-up is narrower than in the video (3.66 vs 3.50 here; the video shows
 20.5 vs 15.3 on its own scale, so the numbers are not directly comparable).
 
+**Other engine types.** The physics works for any aircraft that emits a steady tone and is in the
+ADS-B data; propeller aircraft are simply the best case (strong low-pitched blade-pass tones that
+carry for kilometres, low and slow flight). Helicopters are kept in the search. Jets are left out
+by default (`[search] exclude_engines = ["J", "R"]`, as in the video): their sound is mostly
+broadband, their tones are high-pitched and absorbed over kilometres, and they usually fly high
+and fast. With jets kept (`cases/oyster_jets.toml`) the truth still ranks 1st (67 m, 3.662 vs
+3.504) and the best pair involving a jet ranks 8th, but there are 2.9× the flight pairs (3,078,
+68 % with a jet) and 12.5× the candidates; the search takes 4× as long (305 s) and 2.8× the memory
+(34 GB), and scoring ~6× as long (480 s).
+
 ## How it works
 
 1. **Measure** each flyover on a zoomed, whitened spectrogram (propeller blade-pass tones sit
@@ -88,7 +98,8 @@ dopploc detect "https://www.youtube.com/watch?v=..." [--start 600 --duration 180
 
 No flight data needed. Writes `report.md` (a table), `detections.png`, `detections.json` and
 `events.toml` (ready-made `[[event]]` blocks for a case file) under `out/detect/<name>/`. Web
-links are downloaded with yt-dlp into `data/downloads/` (audio only, just the requested section).
+links are downloaded with yt-dlp into `data/downloads/` (the whole audio track, once; a section
+is cut locally, and times are always on the video's clock).
 
 On a log-frequency axis a straight-line flyby is one fixed curve shape per (speed, CPA distance /
 speed) pair, and f0 is only a vertical shift. 108 such templates are slid over the whitened
@@ -130,6 +141,21 @@ python scripts/eval_detect.py out/detect/oyster/detections.json --case cases/oys
 - **HWNDU flag stream (2017, Greeneville, TN)**: only short clips survive (4:39 from 8 March,
   2:58 from 10 March, 3:58 from August); none contains an aircraft Doppler curve. A full
   geolocation test is impossible with free data, because adsb.lol history starts in 2023.
+- **Lorain lighthouse webcam (Ohio, 15 June 2026, 2.6 h)**: a fixed camera at a known position,
+  with the clock from the stream's start time. 4 high/medium detections. One matches ADS-B: a TBM
+  900 turboprop detected at 199 m/s and 8.2 km, against 193 m/s and 7.8 km in ADS-B (0.1 matches
+  expected by chance). The other three are close (190–640 m), slow sources with no ADS-B aircraft
+  (boats are plausible at a harbour). A CRJ-900 jet at 2.5 km matches at low confidence. Three
+  pistons at 3–9 km are missed; the nearest (a Cessna 182 at 3.4 km) is visible, but its tone
+  fades just after closest approach, which leaves speed and distance undetermined.
+- **Moosehead Lake seaplane fly-in webcam (Maine, 12 September 2026, 4.8 h)**: 30 high/medium
+  curves, mostly slow (30–60 m/s) and close (0.2–1 km), as expected at a fly-in. None can be
+  checked: adsb.lol has a single point below 3,000 ft within 5 km of the seaplane base in those
+  4.8 hours (no receivers nearby, and many seaplanes carry no ADS-B transmitter).
+
+Many webcam archives make poor tests: of 31 archived streams checked, the Ocean City boardwalk
+cams and several others carry a silent audio track (an Opus bitrate of 3.6 kbit/s gives it away),
+and rural areas have little low-altitude ADS-B coverage.
 
 ## Install
 

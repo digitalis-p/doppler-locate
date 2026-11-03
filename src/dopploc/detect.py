@@ -523,9 +523,15 @@ def detect(path, start: float = 0.0, dur: float | None = None, p: Params | None 
 URL = re.compile(r"^https?://", re.I)
 
 
-def fetch(url: str, root: Path, start: float | None = None, dur: float | None = None, log=print):
-    """Download the audio of a web video with yt-dlp into its own directory under ``root``.
-    Returns (audio path, metadata dict). Downloads are untrusted data: nothing in them is run."""
+def fetch(url: str, root: Path, log=print):
+    """Download the audio track of a web video with yt-dlp into its own directory under ``root``
+    (once; later calls reuse it). Returns (audio path, metadata dict). Downloads are untrusted
+    data: nothing in them is run.
+
+    Always the whole track: yt-dlp's ``--download-sections`` goes through ffmpeg reading one long
+    HTTP response, which YouTube throttles to a standstill on long live archives, and a section
+    file would put detection times on the section's clock instead of the video's. Sections are
+    cut locally by ``detect(path, start, dur)``."""
     root = Path(root)
     info = json.loads(subprocess.run(["yt-dlp", "-J", "--no-playlist", "--", url], check=True,
                                      capture_output=True, text=True).stdout)
@@ -535,18 +541,13 @@ def fetch(url: str, root: Path, start: float | None = None, dur: float | None = 
     meta = {k: info.get(k) for k in ("id", "title", "channel", "upload_date", "timestamp", "release_timestamp",
                                      "duration", "was_live", "webpage_url")}
     (out / "meta.json").write_text(json.dumps(meta, indent=1))
-    tag = "" if start is None and dur is None else f"_{int(start or 0)}_{int(dur or 0)}"
-    have = sorted(p for p in out.glob(f"audio{tag}.*") if p.suffix not in (".part", ".ytdl", ".json"))
+    have = sorted(p for p in out.glob("audio.*") if p.suffix not in (".part", ".ytdl", ".json"))
     if have:  # already downloaded
         return have[0], meta
-    cmd = ["yt-dlp", "--no-playlist", "-f", "bestaudio/best", "-o", str(out / f"audio{tag}.%(ext)s")]
-    if start is not None or dur is not None:
-        a = start or 0.0
-        b = "inf" if dur is None else f"{a + dur:.0f}"
-        cmd += ["--download-sections", f"*{a:.0f}-{b}", "--force-keyframes-at-cuts"]
+    cmd = ["yt-dlp", "--no-playlist", "--no-progress", "-f", "bestaudio/best", "-o", str(out / "audio.%(ext)s")]
     log(f"  downloading audio of {meta.get('title')!r}")
     subprocess.run(cmd + ["--", url], check=True, capture_output=True)
-    got = sorted(p for p in out.glob(f"audio{tag}.*") if p.suffix not in (".part", ".ytdl", ".json"))
+    got = sorted(p for p in out.glob("audio.*") if p.suffix not in (".part", ".ytdl", ".json"))
     if not got:
         raise RuntimeError("yt-dlp produced no audio file")
     return got[0], meta

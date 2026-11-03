@@ -67,6 +67,21 @@ straight-line fits; the video measured 920-921 s).
   start (`eval_detect.py --audio0`); the clock line it prints measures any remaining offset.
 - yt-dlp metadata requests in parallel (8 at once, ~240 videos) triggered YouTube HTTP 429 and a
   "confirm you're not a bot" block that cleared within ~20 min. Fetch one at a time, ~10 s apart.
+- Many webcams stream a silent audio track: the Opus format (251) of a silent stream is ~3.6 kbit/s
+  (real audio 20-140 kbit/s), visible in the `yt-dlp -J` format sizes before downloading. All Ocean
+  City Live / Beaches Be Trippin boardwalk cams, SkyDance SkyCam and StreamTime's 2024 Lake Hood
+  stream are silent.
+- `--download-sections` on a long live archive stalled (ffmpeg read 178 KB in 20 min: YouTube
+  throttles its single long HTTP response) and put times on the section's clock. fetch() now takes
+  the whole track with yt-dlp's chunked downloader (an 11 h track in ~30 s) and cuts sections locally.
+- Moosehead Lake fly-in (YouTube Lm8qv-wFEHc, 2026-09-12, Boston and Maine Live): PTZ camera on the
+  Greenville shore with a clock overlay; the exact site is not published (Beaver Cove Marina is a
+  guess). adsb.lol: 1 point below 3,000 ft within 5 km of Greenville SPB in 4.8 h, none within 2 km;
+  low coverage only starts tens of km out. The overlay read at 144p put VOD t=0 ~9 min after
+  `release_timestamp`; unconfirmed (OCR failed at that resolution).
+- Lorain lighthouse cam (YouTube my6GvU6lG0U, 2026-06-15 19:27:55Z start, camera at the West
+  Breakwater Light 41.47757, -82.19056; pii-ok, public landmark): fixed view, no overlay, loud wind/wave noise (-15..-21 dBFS
+  RMS). The one turboprop match puts the audio 10.4 s behind `release_timestamp`.
 
 ## Privacy rules for this public repository
 - Hooks in `.githooks/` (enabled with `git config core.hooksPath .githooks`) block personal data
@@ -112,3 +127,13 @@ straight-line fits; the video measured 920-921 s).
   f0 +-8 %): rank 1, 52 m, 4.378 vs 3.546.
 - 2026-11-02 detector, video's recording: 8 flyovers (E1, E2, faint 21:18, 2 jets, 3 curves with no
   ADS-B aircraft); 4/8 match ADS-B (chance 0.6). Synthetic: 2/2 passes within 1 km, 0 false.
+- 2026-11-02 jets kept (`cases/oyster_jets.toml`): rank 1, 67 m, 3.662 vs 3.504 (unchanged). 3,078
+  flight pairs (props only: 1,060), 2,103 with a jet; best jet pair rank 8 (5 in the top 20, 50 in
+  the top 100). 2,326,586 candidate rows (props: 186,326); GPU search 305 s, peak 34 GB under a 40G
+  cap; scoring 480 s.
+- 2026-11-02 detector, Lorain lighthouse cam (2.6 h): 4 high/medium, 1 matches ADS-B (TBM9 at 7.8 km,
+  chance 0.1); the other 3 are close (190-640 m) slow sources with no ADS-B aircraft. A CRJ9 at
+  2.5 km matched at low confidence; pistons at 3.4, 5.6 and 8.5 km missed (the 3.4 km one visible
+  but cut off after CPA; even a hand fit is degenerate). No calibration change made.
+- 2026-11-02 detector, Moosehead fly-in cam (4.8 h): 30 high/medium (30-60 m/s, 0.2-1 km); 0 of the
+  21-26 ADS-B passes within 15 km matched, none of which came within 2 km: unverifiable.

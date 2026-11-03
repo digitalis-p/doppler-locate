@@ -146,13 +146,12 @@ def cmd_detect(a):
     src = a.source
     meta = {}
     if detect.URL.match(src):
-        path, meta = detect.fetch(src, a.downloads, a.start, a.duration)
-        start, dur = 0.0, None  # the download is already the requested section
+        path, meta = detect.fetch(src, a.downloads)
         stem = path.parent.name
     else:
         path = _p(src)
-        start, dur = a.start or 0.0, a.duration
         stem = path.stem
+    start, dur = a.start or 0.0, a.duration
     out = a.out or Path("out/detect") / stem
     res = detect.detect(path, start, dur, p, meta=meta)
     print(detect.report(res))

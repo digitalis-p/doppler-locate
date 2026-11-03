@@ -17,6 +17,7 @@ difference of the high/medium matches estimates any offset left in the audio clo
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -45,7 +46,7 @@ def main():
     ap.add_argument("--lat", type=float)
     ap.add_argument("--lon", type=float)
     ap.add_argument("--audio0", type=float, help="UTC (unix s) of audio time 0")
-    ap.add_argument("--adsb", type=Path, default=Path("data/adsb"))
+    ap.add_argument("--adsb", type=Path, help="ingested ADS-B day (default data/adsb/<UTC day of the audio>)")
     ap.add_argument("--cache", type=Path, default=Path("data/cache"))
     ap.add_argument("--c", type=float, default=343.0, help="speed of sound (m/s) without --case")
     ap.add_argument("--radius", type=float, default=10000.0)
@@ -60,7 +61,9 @@ def main():
         audio0 = best["t1m"] - (case.events[0].audio_cpa + best["delta"])
         lat, lon, adsb, cache, c = truth["lat"], truth["lon"], case.adsb, case.cache, case.c
     elif None not in (a.lat, a.lon, a.audio0):
-        audio0, lat, lon, adsb, cache, c = a.audio0, a.lat, a.lon, a.adsb, a.cache, a.c
+        audio0, lat, lon, cache, c = a.audio0, a.lat, a.lon, a.cache, a.c
+        day = datetime.fromtimestamp(audio0 + det["start"], timezone.utc).strftime("%Y-%m-%d")
+        adsb = a.adsb or Path("data/adsb") / day
     else:
         ap.error("give --case and --truth, or --lat, --lon and --audio0")
     exp = expect.passes(adsb, cache, lat, lon, audio0 + det["start"], audio0 + det["end"],
