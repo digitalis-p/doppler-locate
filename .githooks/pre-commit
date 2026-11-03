@@ -1,0 +1,3 @@
+#!/bin/sh
+# Refuse commits that would put personal data into history (see pii_check.py).
+exec python3 -P "$(git rev-parse --show-toplevel)/.githooks/pii_check.py" staged

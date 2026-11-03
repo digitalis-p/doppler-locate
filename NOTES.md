@@ -68,6 +68,17 @@ straight-line fits; the video measured 920-921 s).
 - yt-dlp metadata requests in parallel (8 at once, ~240 videos) triggered YouTube HTTP 429 and a
   "confirm you're not a bot" block that cleared within ~20 min. Fetch one at a time, ~10 s apart.
 
+## Privacy rules for this public repository
+- Hooks in `.githooks/` (enabled with `git config core.hooksPath .githooks`) block personal data
+  at commit and again at push; never bypass them with `--no-verify`. A false positive on
+  coordinates or an IP address gets a `pii-ok` marker on that line; nothing else can be waived.
+- Commits use the GitHub noreply address (repo-local `user.email`).
+- Private strings live in `.git/info/pii-denylist` (never committed). Never write them in a
+  tracked file, a commit message or a screenshot.
+- The GUI shows paths under the home directory as `~/...`, so screenshots carry no user name.
+- The history was rewritten before publication; screenshots committed before the `~` display still show
+  `/home/<user>` (the user name equals the commit author name).
+
 ## Development machine and operations
 - The continental-US search with 24-30 workers peaks near 20 GB (including page cache). A search
   running beside a scoring job once exhausted RAM and swap, and systemd-oomd killed the whole

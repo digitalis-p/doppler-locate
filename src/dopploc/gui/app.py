@@ -208,6 +208,12 @@ def fmt_t(t: float) -> str:
     return f"{int(m)}:{s:04.1f}"
 
 
+def fmt_path(p) -> str:
+    """A path for display, with the home directory shown as ~ (keeps user names off screenshots)."""
+    p, home = Path(p), Path.home()
+    return f"~/{p.relative_to(home)}" if p.is_relative_to(home) else str(p)
+
+
 # --------------------------------------------------------------------------------------------- audio
 
 class AudioPage(Gtk.Box):
@@ -384,11 +390,11 @@ class AudioPage(Gtk.Box):
         path, meta = res
         self.win.busy(False)
         self.set_audio(path)
-        self.ov_card.subtitle.set_text(f"{meta.get('title') or path.name} · {path}")
+        self.ov_card.subtitle.set_text(f"{meta.get('title') or path.name} · {fmt_path(path)}")
 
     def set_audio(self, path: Path, focus=None):
         self.path = path
-        self.ov_card.subtitle.set_text(str(path))
+        self.ov_card.subtitle.set_text(fmt_path(path))
         self.detections = []
         self._fill_detections()
         self.load_overview()
@@ -703,7 +709,7 @@ class CasePage(Adw.PreferencesPage):
         doc = self.win.doc
         g = Adw.PreferencesGroup(title="Case file")
         r = Adw.ActionRow(title=self.win.case_path.name if self.win.case_path else "Unsaved case",
-                          subtitle=str(self.win.case_path.parent) if self.win.case_path else "save it to run it")
+                          subtitle=fmt_path(self.win.case_path.parent) if self.win.case_path else "save it to run it")
         r.add_prefix(Gtk.Image(icon_name="text-x-generic-symbolic"))
         r.add_suffix(button(icon="document-open-symbolic", cb=self.win.open_dialog, style="flat", tip="Open case"))
         r.add_suffix(button(icon="document-save-as-symbolic", cb=self.win.save_as, style="flat", tip="Save as"))

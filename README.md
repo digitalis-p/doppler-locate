@@ -259,6 +259,21 @@ RTX 4090, 32-thread CPU, 62 GB RAM:
 
 Development notes and the results log are in [NOTES.md](NOTES.md).
 
+## Contributing
+
+Enable the repository's hooks once per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
+They refuse commits and pushes that would put personal data into history: author e-mails that
+are not GitHub noreply addresses, e-mail addresses, home-directory paths, credentials, precise
+coordinate pairs, data or media files, and the same in the text of screenshots (read with
+tesseract). Private strings to block (a name, a street, a host name) go one per line in
+`.git/info/pii-denylist`, which is never committed. `python3 .githooks/pii_check.py tree`
+audits a whole revision.
+
 ## Licence
 
 Code: [MIT](LICENSE). Data downloaded at run time keeps its own licence (adsb.lol: ODbL;

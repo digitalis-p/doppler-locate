@@ -1,0 +1,3 @@
+#!/bin/sh
+# Refuse commit messages that contain personal data (see pii_check.py).
+exec python3 -P "$(git rev-parse --show-toplevel)/.githooks/pii_check.py" msg "$1"

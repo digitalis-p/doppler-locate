@@ -1,0 +1,4 @@
+#!/bin/sh
+# Last line of defence: re-check every commit being pushed, including ones made with
+# --no-verify or before the hooks were enabled (see pii_check.py).
+exec python3 -P "$(git rev-parse --show-toplevel)/.githooks/pii_check.py" push "$1"
