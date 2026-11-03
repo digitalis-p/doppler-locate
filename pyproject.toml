@@ -3,6 +3,9 @@ name = "dopploc"
 version = "0.1.0"
 description = "Geolocate audio recordings from propeller-aircraft Doppler curves matched to ADS-B tracks"
 requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   "numpy>=2.0",
   "scipy>=1.12",
@@ -18,6 +21,9 @@ dependencies = [
   "eccodes>=2.37",
   "tomlkit>=0.12",
 ]
+
+[project.urls]
+Repository = "https://github.com/digitalis-p/doppler-locate"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

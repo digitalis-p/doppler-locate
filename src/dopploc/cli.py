@@ -1,4 +1,6 @@
-"""Command line: dopploc <command> ...  (run ``dopploc -h``)."""
+"""Geolocate a recording from propeller-aircraft Doppler curves matched to ADS-B tracks.
+
+Run "dopploc <command> -h" for the options of each command."""
 
 from __future__ import annotations
 

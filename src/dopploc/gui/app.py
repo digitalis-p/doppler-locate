@@ -505,7 +505,7 @@ class AudioPage(Gtk.Box):
     def _draw_detections(self):
         from .. import physics
         lines, marks = [], []
-        for n, (i, f) in enumerate(self._shown(), 1):
+        for n, (_, f) in enumerate(self._shown(), 1):
             col = ACCENT[f.confidence]
             half = float(np.clip(3.0 * f.d / max(f.v, 1), 20.0, 90.0))
             tt = np.linspace(f.t_cpa - half, f.t_cpa + half, 120)

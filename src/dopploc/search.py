@@ -242,7 +242,6 @@ def _pair_offsets(c1, t1, c2, t2, offset, tol):
     c2/t2 must be sorted by (c2, t2)."""
     out_i = []
     out_j = []
-    n2 = c2.shape[0]
     for i in range(c1.shape[0]):
         lo = np.searchsorted(c2, c1[i], side="left")
         hi = np.searchsorted(c2, c1[i], side="right")

@@ -1,15 +1,18 @@
 """Known-answer test of ``dopploc detect``: compare its detections with the flyovers ADS-B says
-the recording must contain, given the true camera position and the solved audio clock.
+the recording must contain, given the true microphone position and the audio clock.
 
-  python -P scripts/eval_detect.py CASE.toml DETECTIONS.json TRUTH.json [--radius 10000]
+  python scripts/eval_detect.py DETECTIONS.json --case CASE.toml --truth TRUTH.json
+  python scripts/eval_detect.py DETECTIONS.json --lat 38.33 --lon -75.08 --audio0 1751374800
 
-The audio clock comes from the rank-1 pair of the case's scoring (best_per_pair.csv):
-UTC = audio time + audio0, audio0 = t1m - (event-1 audio_cpa + delta).
+With --case the audio clock comes from the rank-1 pair of the case's scoring (best_per_pair.csv):
+UTC = audio time + audio0, audio0 = t1m - (event-1 audio_cpa + delta). With --audio0 it is given
+directly (an archived livestream: its ``release_timestamp``, the UTC start of the broadcast).
 
 A detection matches a pass when the times agree within --tol seconds AND the detection's
 speed and CPA distance are physically consistent with the aircraft's (straight-line fits are
 rough: distance within a factor 3, speed within -40 %/+60 %). Chance agreement is measured by
-repeating the matching with the detection times shifted by several minutes.
+repeating the matching with the detection times shifted by several minutes. The median time
+difference of the high/medium matches estimates any offset left in the audio clock.
 """
 
 import argparse
@@ -36,20 +39,35 @@ def run_match(dets, exp, tol, shift=0.0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("case", type=Path)
     ap.add_argument("detections", type=Path)
-    ap.add_argument("truth", type=Path)
+    ap.add_argument("--case", type=Path, help="solved case: clock from its rank-1 pair")
+    ap.add_argument("--truth", type=Path, help="JSON with the true lat/lon (with --case)")
+    ap.add_argument("--lat", type=float)
+    ap.add_argument("--lon", type=float)
+    ap.add_argument("--audio0", type=float, help="UTC (unix s) of audio time 0")
+    ap.add_argument("--adsb", type=Path, default=Path("data/adsb"))
+    ap.add_argument("--cache", type=Path, default=Path("data/cache"))
+    ap.add_argument("--c", type=float, default=343.0, help="speed of sound (m/s) without --case")
     ap.add_argument("--radius", type=float, default=10000.0)
     ap.add_argument("--tol", type=float, default=12.0)
     ap.add_argument("--out", type=Path)
     a = ap.parse_args()
-    case = config.load(a.case)
-    truth = json.loads(a.truth.read_text())
-    best = pl.read_csv(case.out / "best_per_pair.csv").row(0, named=True)
-    audio0 = best["t1m"] - (case.events[0].audio_cpa + best["delta"])
     det = json.loads(a.detections.read_text())
-    exp = expect.passes(case.adsb, case.cache, truth["lat"], truth["lon"], audio0 + det["start"],
-                        audio0 + det["end"], radius_m=a.radius, c=case.c, audio0_utc=audio0)
+    if a.case:
+        case = config.load(a.case)
+        truth = json.loads(a.truth.read_text())
+        best = pl.read_csv(case.out / "best_per_pair.csv").row(0, named=True)
+        audio0 = best["t1m"] - (case.events[0].audio_cpa + best["delta"])
+        lat, lon, adsb, cache, c = truth["lat"], truth["lon"], case.adsb, case.cache, case.c
+    elif None not in (a.lat, a.lon, a.audio0):
+        audio0, lat, lon, adsb, cache, c = a.audio0, a.lat, a.lon, a.adsb, a.cache, a.c
+    else:
+        ap.error("give --case and --truth, or --lat, --lon and --audio0")
+    exp = expect.passes(adsb, cache, lat, lon, audio0 + det["start"], audio0 + det["end"],
+                        radius_m=a.radius, c=c, audio0_utc=audio0)
+    if exp.is_empty():
+        print(f"audio0 = {audio0:.1f} UTC; no ADS-B passes within {a.radius / 1000:.0f} km")
+        return
     exp = exp.with_columns(pl.col("engine").replace(KINDS).alias("kind"))
     fl = det["flyovers"]
     air = [f for f in fl if f.get("kind", "aircraft") == "aircraft"]
@@ -67,6 +85,9 @@ def main():
         e = exp.with_columns(pl.Series("hit", hit))
         print(f"\n== {level}: {len(sel)} detections, {len(pairs)} match an ADS-B pass "
               f"(chance level {chance:.1f}), {len(fa)} without one")
+        if level == "high/medium" and pairs:
+            dt = [exp["audio_t"][j] - sel[i]["t_cpa"] for i, j in pairs]
+            print(f"  clock: ADS-B minus detected CPA time, median {np.median(dt):+.1f} s over {len(dt)} matches")
         for kind in ("piston", "turboprop", "unknown", "jet"):
             for lo, hi in ((0, 2000), (2000, 4000), (4000, 7000), (7000, a.radius)):
                 q = e.filter((pl.col("kind") == kind) & (pl.col("d") >= lo) & (pl.col("d") < hi))
